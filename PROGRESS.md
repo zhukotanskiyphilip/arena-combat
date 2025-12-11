@@ -185,10 +185,27 @@
 Після встановлення Build Tools:
 - [ ] Перевірити збірку: `cargo build`
 - [ ] Запустити проект: `cargo run` - побачити вікно!
-- [ ] Створити GitHub репозиторій
-- [ ] Запушити код на GitHub
+- [x] Створити GitHub репозиторій
+- [x] Запушити код на GitHub
 - [ ] Додати wgpu renderer (очистити екран кольором)
 - [ ] Додати FPS counter
+
+---
+
+### 2025-12-11 (Сесія 2 продовження): GitHub інтеграція
+**Тривалість:** +30 хвилин
+
+#### Виконано:
+- ✅ Підключено GitHub: https://github.com/zhukotanskiyphilip/arena-combat
+- ✅ Створено GitHub інтеграцію:
+  - Issue templates (bug report, feature request)
+  - Pull request template
+  - CONTRIBUTING.md
+  - LICENSE (MIT)
+- ✅ Оновлено README.md
+- ✅ Запушено 3 коміти на GitHub
+
+**Репозиторій тепер містить повну документацію та setup інструкції!**
 
 ---
 
