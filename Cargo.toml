@@ -1,0 +1,21 @@
+[package]
+name = "arena_combat"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Window management and input
+winit = "0.30"
+
+# Graphics (wgpu for cross-platform rendering)
+wgpu = "22.0"
+
+# Math library (vectors, matrices)
+glam = { version = "0.29", features = ["serde"] }
+
+# Async runtime (needed for wgpu)
+pollster = "0.4"
+
+# Logging
+env_logger = "0.11"
+log = "0.4"
