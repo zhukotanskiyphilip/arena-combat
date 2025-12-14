@@ -200,6 +200,108 @@ impl Camera {
     pub fn right(&self) -> Vec3 {
         self.forward().cross(self.up).normalize()
     }
+
+    // ========================================================================
+    // ORBIT CAMERA CONTROLS
+    // ========================================================================
+
+    /// Обертає камеру навколо target (orbit camera)
+    ///
+    /// Використовує spherical coordinates для обертання.
+    /// Це дозволяє обертати камеру навколо фіксованої точки (target).
+    ///
+    /// # Аргументи
+    /// * `delta_yaw` - Обертання по горизонталі (радіани, +/-)
+    /// * `delta_pitch` - Обертання по вертикалі (радіани, +/-)
+    ///
+    /// # Обмеження
+    /// - Pitch обмежений діапазоном [-89°, +89°] щоб не перевернути камеру
+    /// - Yaw необмежений (можна обертатись на 360°)
+    ///
+    /// # Математика
+    /// 1. Обчислюємо вектор від target до camera
+    /// 2. Конвертуємо в spherical coordinates (radius, yaw, pitch)
+    /// 3. Додаємо delta_yaw та delta_pitch
+    /// 4. Обмежуємо pitch
+    /// 5. Конвертуємо назад в Cartesian coordinates
+    /// 6. Оновлюємо position = target + offset
+    pub fn orbit(&mut self, delta_yaw: f32, delta_pitch: f32) {
+        // 1. Вектор від target до camera
+        let offset = self.position - self.target;
+        let radius = offset.length();
+
+        // Якщо камера ДУ close до target - skip
+        if radius < 0.1 {
+            return;
+        }
+
+        // 2. Поточні spherical координати
+        // yaw = кут в XZ plane (горизонтальне обертання)
+        // pitch = кут від XZ plane (вертикальне обертання)
+        let current_yaw = offset.z.atan2(offset.x);
+        let current_pitch = (offset.y / radius).asin();
+
+        // 3. Додаємо delta
+        let new_yaw = current_yaw + delta_yaw;
+        let new_pitch = current_pitch + delta_pitch;
+
+        // 4. Обмежуємо pitch (не даємо камері перевернутись)
+        // Обмежуємо до [-89°, +89°] (залишаємо невеличкий запас від ±90°)
+        let max_pitch = 89.0_f32.to_radians();
+        let clamped_pitch = new_pitch.clamp(-max_pitch, max_pitch);
+
+        // 5. Конвертуємо spherical → Cartesian
+        // x = r * cos(pitch) * cos(yaw)
+        // y = r * sin(pitch)
+        // z = r * cos(pitch) * sin(yaw)
+        let new_offset = Vec3::new(
+            radius * clamped_pitch.cos() * new_yaw.cos(),
+            radius * clamped_pitch.sin(),
+            radius * clamped_pitch.cos() * new_yaw.sin(),
+        );
+
+        // 6. Оновлюємо position
+        self.position = self.target + new_offset;
+    }
+
+    /// Zoom (наближення/віддалення від target)
+    ///
+    /// Переміщує камеру ближче або далі від target вздовж напрямку погляду.
+    ///
+    /// # Аргументи
+    /// * `delta` - Зміна відстані (+ = ближче, - = далі)
+    ///
+    /// # Обмеження
+    /// - Мінімальна відстань: 1.0 unit (не даємо камері зайти всередину target)
+    /// - Максимальна відстань: 50.0 units
+    pub fn zoom(&mut self, delta: f32) {
+        let offset = self.position - self.target;
+        let current_distance = offset.length();
+
+        // Обчислюємо нову відстань
+        let new_distance = current_distance - delta; // Мінус бо + це zoom in
+
+        // Обмежуємо відстань
+        let clamped_distance = new_distance.clamp(1.0, 50.0);
+
+        // Оновлюємо position зі збереженням напрямку
+        if offset.length() > 0.01 {
+            let direction = offset.normalize();
+            self.position = self.target + direction * clamped_distance;
+        }
+    }
+
+    /// Переміщує target (pan camera)
+    ///
+    /// Переміщує і камеру і target на вказаний offset.
+    /// Зберігає відносну позицію камери щодо target.
+    ///
+    /// # Аргументи
+    /// * `offset` - Вектор переміщення в world space
+    pub fn pan(&mut self, offset: Vec3) {
+        self.position += offset;
+        self.target += offset;
+    }
 }
 
 /// Uniform buffer для передачі в shader

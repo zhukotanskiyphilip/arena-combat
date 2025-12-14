@@ -65,14 +65,17 @@
 mod rendering;
 mod fps_counter;
 mod camera;
+mod input;
 
 use rendering::WgpuRenderer;
 use fps_counter::FpsCounter;
+use input::InputState;
 use std::sync::Arc;
 use winit::{
     application::ApplicationHandler,
-    event::WindowEvent,
+    event::{WindowEvent, MouseButton, ElementState},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    keyboard::{PhysicalKey, KeyCode},
     window::{Window, WindowId},
 };
 
@@ -85,6 +88,7 @@ struct App {
     window: Option<Arc<Window>>,
     renderer: Option<WgpuRenderer>,
     fps_counter: FpsCounter,
+    input_state: InputState,
 }
 
 impl ApplicationHandler for App {
@@ -113,22 +117,44 @@ impl ApplicationHandler for App {
         event: WindowEvent,
     ) {
         match event {
+            // Mouse position (для camera rotation)
+            WindowEvent::CursorMoved { position, .. } => {
+                self.input_state.update_mouse_position(position.x, position.y);
+            }
+
+            // Mouse buttons (для drag rotation)
+            WindowEvent::MouseInput { button, state, .. } => {
+                self.input_state.update_mouse_button(button, state);
+            }
+
+            // Mouse wheel (для zoom)
+            WindowEvent::MouseWheel { delta, .. } => {
+                let zoom_amount = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_x, y) => y * 0.5,
+                    winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.y / 50.0) as f32,
+                };
+
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.camera.zoom(zoom_amount);
+                }
+            }
+
+            // Keyboard input
+            WindowEvent::KeyboardInput { event: key_event, .. } => {
+                if let PhysicalKey::Code(key_code) = key_event.physical_key {
+                    self.input_state.update_key(key_code, key_event.state);
+
+                    // ESC - закриття
+                    if key_code == KeyCode::Escape && key_event.state == ElementState::Pressed {
+                        log::info!("ESC натиснуто - закриття...");
+                        event_loop.exit();
+                    }
+                }
+            }
+
             // Закрити вікно
             WindowEvent::CloseRequested => {
                 log::info!("Закриття вікна...");
-                event_loop.exit();
-            }
-
-            // ESC також закриває
-            WindowEvent::KeyboardInput {
-                event:
-                    winit::event::KeyEvent {
-                        physical_key: winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Escape),
-                        ..
-                    },
-                ..
-            } => {
-                log::info!("ESC натиснуто - закриття...");
                 event_loop.exit();
             }
 
@@ -152,6 +178,59 @@ impl ApplicationHandler for App {
                             window.set_title(&title);
                         }
                     }
+                }
+
+                // === CAMERA UPDATE ===
+                if let Some(renderer) = &mut self.renderer {
+                    // 1. Orbit camera (mouse drag with left button)
+                    if self.input_state.mouse_left {
+                        let (delta_x, delta_y) = self.input_state.mouse_delta();
+
+                        // Конвертуємо pixel delta в радіани
+                        // Чутливість: 0.005 радіан на піксель (~0.3° на піксель)
+                        let sensitivity = 0.005;
+                        let delta_yaw = -(delta_x as f32) * sensitivity;   // Мінус для інтуїтивного руху
+                        let delta_pitch = -(delta_y as f32) * sensitivity; // Мінус для інтуїтивного руху
+
+                        if delta_x.abs() > 0.1 || delta_y.abs() > 0.1 {
+                            renderer.camera.orbit(delta_yaw, delta_pitch);
+                        }
+                    }
+
+                    // 2. Pan camera (WASD)
+                    let mut pan_offset = glam::Vec3::ZERO;
+                    let pan_speed = 0.1; // 0.1 units per frame
+
+                    if self.input_state.is_w_pressed() {
+                        // W = forward (в напрямку camera forward проекція на XZ plane)
+                        let forward = renderer.camera.forward();
+                        let forward_xz = glam::Vec3::new(forward.x, 0.0, forward.z).normalize();
+                        pan_offset += forward_xz * pan_speed;
+                    }
+                    if self.input_state.is_s_pressed() {
+                        // S = backward
+                        let forward = renderer.camera.forward();
+                        let forward_xz = glam::Vec3::new(forward.x, 0.0, forward.z).normalize();
+                        pan_offset -= forward_xz * pan_speed;
+                    }
+                    if self.input_state.is_a_pressed() {
+                        // A = left
+                        let right = renderer.camera.right();
+                        pan_offset -= right * pan_speed;
+                    }
+                    if self.input_state.is_d_pressed() {
+                        // D = right
+                        let right = renderer.camera.right();
+                        pan_offset += right * pan_speed;
+                    }
+
+                    // Застосовуємо pan якщо є offset
+                    if pan_offset.length() > 0.01 {
+                        renderer.camera.pan(pan_offset);
+                    }
+
+                    // Скидаємо mouse delta після обробки
+                    self.input_state.reset_mouse_delta();
                 }
 
                 // Рендеринг
@@ -217,6 +296,7 @@ fn main() {
         window: None,
         renderer: None,
         fps_counter: FpsCounter::new(),
+        input_state: InputState::new(),
     };
 
     // Запустити event loop

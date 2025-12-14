@@ -646,6 +646,174 @@ warning: method `size` is never used
 
 ---
 
+### 2025-12-14 (Сесія 6): Camera Controls - Orbit, Zoom, Pan 🎮
+**Тривалість:** ~1 година
+**Фаза:** Phase 1 - Week 2 - Interactive Camera
+
+#### Виконано:
+- ✅ **Створено InputState систему** (`src/input/`):
+  - `input/mod.rs` - модуль entry point
+  - `input/input_state.rs` - повна реалізація input tracking:
+    - Mouse position tracking (current + previous для delta)
+    - Mouse button state (left/right/middle)
+    - Keyboard state (HashSet<KeyCode> для швидкого lookup)
+    - Convenience methods: `is_w_pressed()`, `is_a_pressed()`, etc.
+    - `mouse_delta()` - різниця позицій для camera rotation
+    - `reset_mouse_delta()` - скидання після обробки
+
+- ✅ **Додано Orbit Camera** (`src/camera/camera.rs`):
+  - `orbit(delta_yaw, delta_pitch)` метод:
+    - Spherical coordinates математика
+    - Конверсія Cartesian → Spherical → Cartesian
+    - **Pitch clamping [-89°, +89°]** - не дає камері перевернутись
+    - Yaw необмежений (360° обертання)
+  - Формули:
+    ```rust
+    // Spherical to Cartesian:
+    x = r * cos(pitch) * cos(yaw)
+    y = r * sin(pitch)
+    z = r * cos(pitch) * sin(yaw)
+    ```
+
+- ✅ **Додано Zoom** (`src/camera/camera.rs`):
+  - `zoom(delta)` метод
+  - Mouse wheel handling в main.rs
+  - **Обмеження відстані [1.0, 50.0] units**
+  - LineDelta: 0.5 units per scroll line
+  - PixelDelta: ~50 pixels = 1 unit
+
+- ✅ **Додано Pan (WASD)** (`src/camera/camera.rs`):
+  - `pan(offset)` метод - переміщує і camera і target
+  - W/S - forward/backward (проекція на XZ plane)
+  - A/D - left/right (camera right vector)
+  - **Pan speed: 0.1 units per frame**
+
+- ✅ **Інтегровано в main.rs**:
+  - Input events handling:
+    - `CursorMoved` → update mouse position
+    - `MouseInput` → update button state
+    - `MouseWheel` → zoom camera
+    - `KeyboardInput` → update key state + ESC handling
+  - Camera update loop в `RedrawRequested`:
+    - Orbit при mouse_left + drag
+    - Pan при WASD pressed
+    - Reset mouse delta після обробки
+
+#### Технічні деталі:
+
+**Створені файли:**
+- `src/input/mod.rs` - input модуль (25 рядків)
+- `src/input/input_state.rs` - InputState struct (240+ рядків)
+
+**Змінені файли:**
+- `src/camera/camera.rs` - додано orbit(), zoom(), pan() методи (+100 рядків)
+- `src/main.rs` - input handling та camera update loop (+80 рядків)
+
+**Структура коду після сесії:**
+```
+arena_combat/
+├── src/
+│   ├── main.rs                  # ✅ Оновлено (input + camera update)
+│   ├── fps_counter.rs
+│   ├── input/                   # ✅ НОВИЙ
+│   │   ├── mod.rs
+│   │   └── input_state.rs
+│   ├── camera/
+│   │   ├── mod.rs
+│   │   └── camera.rs            # ✅ Оновлено (orbit/zoom/pan)
+│   └── rendering/
+│       ├── mod.rs
+│       ├── renderer.rs
+│       └── grid.rs
+└── PROGRESS.md                  # ✅ Оновлено
+```
+
+#### Математика Orbit Camera:
+
+**Spherical Coordinates:**
+- `radius` = відстань від target до camera
+- `yaw` = кут в XZ plane (горизонтальне обертання)
+- `pitch` = кут від XZ plane (вертикальне обертання)
+
+**Конверсія:**
+```
+Cartesian → Spherical:
+  yaw = atan2(z, x)
+  pitch = asin(y / radius)
+
+Spherical → Cartesian:
+  x = r * cos(pitch) * cos(yaw)
+  y = r * sin(pitch)
+  z = r * cos(pitch) * sin(yaw)
+```
+
+**Sensitivity:**
+- 0.005 радіан/піксель (~0.3°/піксель)
+- Інвертовані delta для інтуїтивного руху
+
+#### Controls Summary:
+
+| Input | Action | Details |
+|-------|--------|---------|
+| Left Mouse + Drag | Orbit | Обертання навколо target |
+| Mouse Wheel | Zoom | Відстань 1.0 - 50.0 units |
+| W | Pan Forward | В напрямку погляду (XZ plane) |
+| S | Pan Backward | Назад |
+| A | Pan Left | Вліво |
+| D | Pan Right | Вправо |
+| ESC | Exit | Закрити програму |
+
+#### Warnings (очікувані):
+```
+warning: unused import: `grid::Grid`
+warning: unused import: `PhysicalKey` (в input_state.rs)
+warning: unused import: `MouseButton` (в main.rs)
+warning: methods `mouse_position`, `is_space_pressed`, `is_shift_pressed`, `is_ctrl_pressed` are never used
+```
+**Пояснення:** Методи для майбутнього використання (Space = jump, Shift = sprint).
+
+#### Що працює:
+
+- [x] Orbit camera (mouse drag)
+- [x] Zoom (mouse wheel)
+- [x] Pan (WASD)
+- [x] Pitch clamping (не перевертається)
+- [x] Distance limits (1.0 - 50.0)
+- [x] Smooth movement
+- [x] FPS залишається стабільним (~60)
+
+#### Статус Phase 1, Week 2:
+
+**Завершено:**
+- ✅ Базове вікно + event loop (Сесія 3)
+- ✅ wgpu renderer + clear color (Сесія 4)
+- ✅ FPS counter (Сесія 4)
+- ✅ 3D camera з perspective projection (Сесія 5)
+- ✅ Grid visualization (Сесія 5)
+- ✅ **Camera controls - orbit, zoom, pan (Сесія 6)** ✨
+
+#### Наступні кроки (Сесія 7):
+
+**Option A - 3D Models:**
+- [ ] Завантажити простий GLTF model (куб для тестування)
+- [ ] Створити mesh rendering pipeline
+- [ ] Базовий shader для 3D моделі
+- [ ] Відрендерити модель на сцені
+
+**Option B - Delta Time + Fixed Timestep:**
+- [ ] Додати delta time tracking
+- [ ] Підготувати fixed timestep loop (60 FPS physics)
+- [ ] Розділити render FPS від game logic FPS
+
+**Option C - Basic Lighting:**
+- [ ] Додати directional light
+- [ ] Простий diffuse shading
+- [ ] Normal vectors для mesh
+
+**Рекомендація:** Option A (3D Models) - потрібен об'єкт на сцені для подальшої роботи над combat системою.
+
+---
+
 ## 💡 Ключові концепції проекту
 
 ### Філософія бою (з GDD):
