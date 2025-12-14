@@ -38,6 +38,7 @@
 
 use wgpu::util::DeviceExt;
 use crate::transform::{Transform, TransformUniform};
+use crate::debug_log::log_debug;
 
 /// Vertex структура для 3D mesh
 ///
@@ -311,9 +312,9 @@ pub fn generate_player_body(
     let segments = 12;
 
     // Body parameters
-    let body_radius = 0.3;
-    let body_height = 1.2;
-    let head_radius = 0.25;
+    let body_radius: f32 = 0.3;
+    let body_height: f32 = 1.2;
+    let head_radius: f32 = 0.25;
 
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
@@ -323,19 +324,19 @@ pub fn generate_player_body(
     vertices.extend(body_verts);
     indices.extend(body_idx);
 
-    // === CHEST (випуклість спереду, -Z напрямок) ===
-    // Додаємо маленьку сферу-груди на передній частині тіла
-    let chest_color = [body_color[0] * 1.1, body_color[1] * 1.1, body_color[2] * 1.1]; // Трохи світліше
-    let (chest_verts, chest_idx) = generate_sphere(0.15, 8, 4, chest_color);
-    let chest_y = 0.2; // Вище центру тіла
-    let chest_z = -(body_radius + 0.08); // Спереду (forward = -Z)
+    // === ARROW (довга стрілка вперед для наочності напрямку) ===
+    // Яскраво-червона стрілка в напрямку -Z
+    let arrow_color = [1.0, 0.0, 0.0]; // Яскраво-червоний
+    let (arrow_verts, arrow_idx) = generate_box(0.1, 0.1, 1.5, arrow_color); // Довга коробка
+    let arrow_z = -0.75 - body_radius; // Центр стрілки попереду тіла
+    let arrow_y = 0.3;
     let vertex_offset = vertices.len() as u16;
-    for mut v in chest_verts {
-        v.position[1] += chest_y;
-        v.position[2] += chest_z;
+    for mut v in arrow_verts {
+        v.position[1] += arrow_y;
+        v.position[2] += arrow_z;
         vertices.push(v);
     }
-    for idx in chest_idx {
+    for idx in arrow_idx {
         indices.push(idx + vertex_offset);
     }
 
@@ -718,6 +719,17 @@ impl Mesh {
     ///
     /// Викликайте після зміни self.transform
     pub fn update_transform(&mut self, queue: &wgpu::Queue) {
+        // DEBUG: log model matrix before upload
+        let model = self.transform.model_matrix();
+        static mut COUNTER: u32 = 0;
+        unsafe {
+            COUNTER += 1;
+            if COUNTER % 120 == 0 {
+                log_debug(&format!("GPU upload model[0]: [{:.3}, {:.3}, {:.3}, {:.3}]",
+                    model.x_axis.x, model.x_axis.y, model.x_axis.z, model.x_axis.w));
+            }
+        }
+
         self.transform_uniform.update(&self.transform);
         queue.write_buffer(
             &self.transform_buffer,

@@ -71,6 +71,7 @@ mod time;
 mod player;
 mod combat;
 mod enemy;
+pub mod debug_log;
 
 use rendering::WgpuRenderer;
 use fps_counter::FpsCounter;
@@ -80,6 +81,7 @@ use player::Player;
 use combat::{Combat, HitboxManager};
 use enemy::{Enemy, spawn_enemies_circle};
 use std::sync::Arc;
+use debug_log::log_debug;
 use winit::{
     application::ApplicationHandler,
     event::{WindowEvent, MouseButton, ElementState},
@@ -104,6 +106,7 @@ struct App {
     hitbox_manager: HitboxManager,
     enemies: Vec<Enemy>,
     enemies_spawned: bool,
+    player_synced: bool, // Синхронізація player.yaw з камерою при старті
 }
 
 impl ApplicationHandler for App {
@@ -217,6 +220,17 @@ impl ApplicationHandler for App {
                     }
                 }
 
+                // === PLAYER YAW SYNC (one-time at start) ===
+                if !self.player_synced {
+                    if let Some(renderer) = &self.renderer {
+                        // Синхронізуємо player.yaw з камерою: персонаж спиною до камери
+                        self.player.yaw = renderer.camera.yaw + std::f32::consts::PI;
+                        self.player_synced = true;
+                        log_debug(&format!("SYNC: player.yaw={:.1}° camera.yaw={:.1}°",
+                            self.player.yaw.to_degrees(), renderer.camera.yaw.to_degrees()));
+                    }
+                }
+
                 // === COMBAT UPDATE ===
                 self.combat.update(self.game_time.delta());
 
@@ -261,9 +275,42 @@ impl ApplicationHandler for App {
                     renderer.update_enemies(&self.enemies);
                 }
 
-                // === PLAYER UPDATE (Camera-relative movement) ===
-                if let Some(renderer) = &self.renderer {
+                // === CAMERA + PLAYER UPDATE (в одному блоці!) ===
+                if let Some(renderer) = &mut self.renderer {
                     let delta = self.game_time.delta();
+
+                    // Mouse look (права кнопка миші) - обертає І камеру І гравця
+                    if self.input_state.mouse_right {
+                        let (delta_x, delta_y) = self.input_state.mouse_delta();
+                        let sensitivity = 0.003;
+                        let delta_yaw = (delta_x as f32) * sensitivity;
+                        let delta_pitch = (delta_y as f32) * sensitivity;
+
+                        if delta_x.abs() > 0.1 || delta_y.abs() > 0.1 {
+                            renderer.camera.rotate_third_person(delta_yaw, delta_pitch);
+                            // Гравець обертається разом з камерою
+                            self.player.yaw += delta_yaw;
+
+                            // DEBUG: порівнюємо камеру і тіло
+                            log_debug(&format!("MOUSE: cam_yaw={:.1}° player_yaw={:.1}° delta={:.3}",
+                                renderer.camera.yaw.to_degrees(),
+                                self.player.yaw.to_degrees(),
+                                delta_yaw));
+                        }
+                    }
+                    self.input_state.reset_mouse_delta();
+
+                    // Q/E - ручне обертання тіла
+                    if self.input_state.is_q_pressed() {
+                        let old = self.player.yaw;
+                        self.player.yaw -= 2.0 * delta;
+                        log_debug(&format!("Q_KEY: player.yaw {:.1}° -> {:.1}°", old.to_degrees(), self.player.yaw.to_degrees()));
+                    }
+                    if self.input_state.is_e_pressed() {
+                        let old = self.player.yaw;
+                        self.player.yaw += 2.0 * delta;
+                        log_debug(&format!("E_KEY: player.yaw {:.1}° -> {:.1}°", old.to_degrees(), self.player.yaw.to_degrees()));
+                    }
 
                     // Отримуємо camera directions для camera-relative руху
                     let cam_forward = renderer.camera.forward_xz();
@@ -295,11 +342,6 @@ impl ApplicationHandler for App {
                         // Рухаємо гравця
                         self.player.position += move_dir * self.player.move_speed * delta;
                     }
-
-                    // Гравець ЗАВЖДИ дивиться в напрямку камери
-                    // camera.yaw - це кут камери НАВКОЛО гравця
-                    // Гравець має дивитися В ПРОТИЛЕЖНОМУ напрямку (від камери до таргету)
-                    self.player.yaw = renderer.camera.yaw + std::f32::consts::PI;
                 }
 
                 // === PLAYER MESH UPDATE ===
@@ -307,30 +349,9 @@ impl ApplicationHandler for App {
                     renderer.update_player(&self.player, &self.combat);
                 }
 
-                // === CAMERA UPDATE (Third Person) ===
+                // === CAMERA POSITION UPDATE (слідує за гравцем) ===
                 if let Some(renderer) = &mut self.renderer {
-                    // Mouse look (права кнопка миші)
-                    if self.input_state.mouse_right {
-                        let (delta_x, delta_y) = self.input_state.mouse_delta();
-
-                        // Конвертуємо pixel delta в радіани
-                        let sensitivity = 0.003;
-                        let delta_yaw = (delta_x as f32) * sensitivity;
-                        let delta_pitch = (delta_y as f32) * sensitivity;
-
-                        if delta_x.abs() > 0.1 || delta_y.abs() > 0.1 {
-                            renderer.camera.rotate_third_person(delta_yaw, delta_pitch);
-                        }
-                    }
-
-                    // Zoom (mouse wheel)
-                    // Вже обробляється в MouseWheel event, але оновимо для third person
-
-                    // Оновлюємо позицію камери за гравцем
                     renderer.camera.update_third_person(self.player.position, 1.2);
-
-                    // Скидаємо mouse delta після обробки
-                    self.input_state.reset_mouse_delta();
                 }
 
                 // Рендеринг
@@ -411,6 +432,7 @@ fn main() {
         hitbox_manager: HitboxManager::new(),
         enemies,
         enemies_spawned: false,
+        player_synced: false,
     };
 
     // Запустити event loop

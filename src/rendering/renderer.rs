@@ -70,6 +70,7 @@ use crate::transform::Transform;
 use crate::player::Player;
 use crate::combat::Combat;
 use crate::enemy::Enemy;
+use crate::debug_log::log_debug;
 use super::grid::Grid;
 use super::mesh::{Mesh, generate_cube, generate_player_mannequin, generate_player_body, generate_weapon_arm};
 use glam::{Vec3, Quat};
@@ -537,24 +538,46 @@ impl WgpuRenderer {
     /// * `player` - Player struct з поточною позицією та yaw
     /// * `combat` - Combat struct зі станом атаки
     pub fn update_player(&mut self, player: &Player, combat: &Combat) {
-        // === PLAYER BODY ===
-        // Оновлюємо позицію mesh (з offset для центрування тіла)
-        self.player_mesh.transform.position = player.position + Vec3::new(0.0, 0.75, 0.0);
+        let yaw = player.yaw;
 
-        // Оновлюємо обертання mesh (yaw)
-        self.player_mesh.transform.rotation = Quat::from_rotation_y(player.yaw);
+        // === PLAYER BODY ===
+        self.player_mesh.transform.position = player.position + Vec3::new(0.0, 0.75, 0.0);
+        let new_rotation = Quat::from_rotation_y(yaw);
+
+        // DEBUG: порівняємо стару і нову ротацію
+        static mut LAST_YAW: f32 = 999.0;
+        unsafe {
+            if (LAST_YAW - yaw).abs() > 0.01 {
+                log_debug(&format!("UPDATE_PLAYER: yaw={:.1}° rotation=({:.3}, {:.3}, {:.3}, {:.3})",
+                    yaw.to_degrees(),
+                    new_rotation.x, new_rotation.y, new_rotation.z, new_rotation.w));
+                LAST_YAW = yaw;
+            }
+        }
+
+        self.player_mesh.transform.rotation = new_rotation;
         self.player_mesh.transform.scale = Vec3::ONE;
 
-        // Оновлюємо GPU buffer
+        // Debug: логуємо напрямок тіла (forward = -Z rotated by yaw)
+        let forward_x = -yaw.sin();
+        let forward_z = -yaw.cos();
+        static mut LAST_FWD: (f32, f32) = (0.0, 0.0);
+        unsafe {
+            if (LAST_FWD.0 - forward_x).abs() > 0.05 || (LAST_FWD.1 - forward_z).abs() > 0.05 {
+                log_debug(&format!("BODY FORWARD: ({:.2}, {:.2}) | yaw: {:.1}°",
+                    forward_x, forward_z, yaw.to_degrees()));
+                LAST_FWD = (forward_x, forward_z);
+            }
+        }
+
         self.player_mesh.update_transform(&self.queue);
 
         // === WEAPON/ARM ===
-        // Позиція плеча в world space
+        // Позиція плеча в world space (праворуч від гравця)
         let body_radius = 0.3_f32;
-        let shoulder_height = 0.45_f32;  // Відносно центру тіла
+        let shoulder_height = 0.45_f32;
 
-        // Shoulder position (праворуч від гравця)
-        let right_dir = Vec3::new(player.yaw.cos(), 0.0, -player.yaw.sin());
+        let right_dir = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
         let shoulder_world = player.position
             + Vec3::new(0.0, 0.75 + shoulder_height, 0.0)
             + right_dir * body_radius;
@@ -562,12 +585,9 @@ impl WgpuRenderer {
         self.weapon_mesh.transform.position = shoulder_world;
 
         // Rotation: base yaw + swing angle
-        // Swing відбувається навколо локальної Y осі руки (горизонтальний замах)
-        let base_rotation = Quat::from_rotation_y(player.yaw);
+        let base_rotation = Quat::from_rotation_y(yaw);
         let swing_rotation = Quat::from_rotation_y(combat.weapon_swing_angle);
         self.weapon_mesh.transform.rotation = base_rotation * swing_rotation;
-
-        // Оновлюємо GPU buffer
         self.weapon_mesh.update_transform(&self.queue);
     }
 
