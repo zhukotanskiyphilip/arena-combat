@@ -32,6 +32,8 @@
 */
 
 pub mod renderer;
+pub mod grid;
 
 // Реєкспортуємо WgpuRenderer для зручності
 pub use renderer::WgpuRenderer;
+pub use grid::Grid;

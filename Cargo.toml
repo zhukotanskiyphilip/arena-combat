@@ -13,6 +13,9 @@ wgpu = "22.0"
 # Math library (vectors, matrices)
 glam = { version = "0.29", features = ["serde"] }
 
+# Data conversion for GPU (safe byte casting)
+bytemuck = { version = "1.14", features = ["derive"] }
+
 # Async runtime (needed for wgpu)
 pollster = "0.4"
 

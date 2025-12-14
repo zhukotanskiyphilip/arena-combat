@@ -62,7 +62,11 @@
 
 use std::sync::Arc;
 use wgpu;
+use wgpu::util::DeviceExt;
 use winit::window::Window;
+
+use crate::camera::{Camera, CameraUniform};
+use super::grid::Grid;
 
 /// Основний renderer на базі wgpu
 ///
@@ -86,6 +90,21 @@ pub struct WgpuRenderer {
 
     /// Розмір вікна
     size: winit::dpi::PhysicalSize<u32>,
+
+    /// 3D Camera
+    pub camera: Camera,
+
+    /// Camera uniform buffer
+    camera_uniform: CameraUniform,
+
+    /// Camera uniform buffer на GPU
+    camera_buffer: wgpu::Buffer,
+
+    /// Bind group для camera
+    camera_bind_group: wgpu::BindGroup,
+
+    /// Grid (координатна сітка)
+    grid: Grid,
 }
 
 impl WgpuRenderer {
@@ -174,7 +193,56 @@ impl WgpuRenderer {
         };
 
         surface.configure(&device, &config);
+
+        // 6. Створити Camera
+        use glam::Vec3;
+        let camera = Camera::new(
+            Vec3::new(0.0, 3.0, 8.0),  // Позиція: трохи вище та назад
+            Vec3::new(0.0, 0.0, 0.0),  // Дивимось на центр
+            size.width as f32 / size.height as f32, // Aspect ratio
+        );
+
+        // 7. Створити Camera Uniform Buffer
+        let mut camera_uniform = CameraUniform::new();
+        camera_uniform.update_view_proj(&camera);
+
+        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Camera Buffer"),
+            contents: bytemuck::cast_slice(&[camera_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        // 8. Створити Bind Group Layout для Camera
+        let camera_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+                label: Some("camera_bind_group_layout"),
+            });
+
+        // 9. Створити Bind Group для Camera
+        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &camera_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            }],
+            label: Some("camera_bind_group"),
+        });
+
+        // 10. Створити Grid
+        let grid = Grid::new(&device, &config, &camera_bind_group_layout, 20);
+
         log::info!("wgpu renderer готовий до роботи!");
+        log::info!("Camera: position={:?}, target={:?}", camera.position, camera.target);
 
         Self {
             surface,
@@ -183,6 +251,11 @@ impl WgpuRenderer {
             queue,
             config,
             size,
+            camera,
+            camera_uniform,
+            camera_buffer,
+            camera_bind_group,
+            grid,
         }
     }
 
@@ -199,6 +272,9 @@ impl WgpuRenderer {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
+
+            // Оновлюємо aspect ratio камери
+            self.camera.update_aspect(new_size.width, new_size.height);
         }
     }
 
@@ -215,24 +291,32 @@ impl WgpuRenderer {
     /// - `SurfaceError::Lost` - surface втрачено, треба пересоздать
     /// - `SurfaceError::OutOfMemory` - не вистачає пам'яті
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-        // 1. Отримати поточний frame з surface
+        // 1. Оновити camera uniform buffer
+        self.camera_uniform.update_view_proj(&self.camera);
+        self.queue.write_buffer(
+            &self.camera_buffer,
+            0,
+            bytemuck::cast_slice(&[self.camera_uniform]),
+        );
+
+        // 2. Отримати поточний frame з surface
         let output = self.surface.get_current_texture()?;
 
-        // 2. Створити view для текстури
+        // 3. Створити view для текстури
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        // 3. Створити command encoder
+        // 4. Створити command encoder
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Render Encoder"),
             });
 
-        // 4. Створити render pass з clear color
+        // 5. Створити render pass і малювати grid
         {
-            let _render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
@@ -251,6 +335,9 @@ impl WgpuRenderer {
                 occlusion_query_set: None,
                 timestamp_writes: None,
             });
+
+            // Малюємо grid
+            self.grid.render(&mut render_pass, &self.camera_bind_group);
             // render_pass автоматично завершується при drop
         }
 

@@ -372,11 +372,277 @@ surface: wgpu::Surface<'static> requires '1 must outlive 'static
 - ⏳ 3D camera setup (Наступна сесія)
 
 #### Наступні кроки (Сесія 5):
-- [ ] Додати базовий 3D camera (perspective projection)
-- [ ] Створити coordinate system (Y-up, right-handed)
+- [x] Додати базовий 3D camera (perspective projection) ✅
+- [x] Створити coordinate system (Y-up, right-handed) ✅
 - [ ] Додати camera controls (mouse look - поворот камери)
-- [ ] Додати grid на підлозі для візуалізації (debug)
-- [ ] (Опційно) Простий shader для grid
+- [x] Додати grid на підлозі для візуалізації (debug) ✅
+- [x] Простий shader для grid ✅
+
+---
+
+### 2025-12-14 (Сесія 5): 3D Camera + Grid Shader + Coordinate System 🎯
+**Тривалість:** ~2 години
+**Фаза:** Phase 1 - Week 2 - 3D Fundamentals
+
+#### Виконано:
+- ✅ **Створено повний 3D camera модуль** (`src/camera/`):
+  - `camera/mod.rs` - експорт Camera та CameraUniform
+  - `camera/camera.rs` - повна реалізація 3D camera:
+    - `Camera` struct з position, target, up, fovy, aspect, znear, zfar
+    - Perspective projection з правильним aspect ratio
+    - View matrix (look-at transformation)
+    - **OpenGL to wgpu coordinate conversion** - критична трансформація для Vulkan/DX12:
+      ```rust
+      // Конвертуємо з OpenGL координат (Z: -1 to 1) в wgpu (Z: 0 to 1)
+      let opengl_to_wgpu = Mat4::from_cols_array(&[
+          1.0, 0.0, 0.0, 0.0,
+          0.0, 1.0, 0.0, 0.0,
+          0.0, 0.0, 0.5, 0.0,
+          0.0, 0.0, 0.5, 1.0,
+      ]);
+      ```
+    - View-projection matrix combination
+    - `update_aspect()` метод для resize events
+  - `CameraUniform` - GPU buffer structure з bytemuck::Pod + Zeroable
+  - Використано **glam** для всієї математики (Vec3, Mat4)
+
+- ✅ **Створено Grid shader** (`assets/shaders/grid.wgsl`):
+  - WGSL shader для рендерінгу координатної сітки
+  - **Vertex shader:**
+    - Приймає позицію та колір вершини
+    - Трансформує через camera view-projection matrix
+    - Передає world position для fade-out ефекту
+  - **Fragment shader:**
+    - **Distance-based fade-out** - сітка затухає на відстані (alpha зменшується з 0.6 до 0.0)
+    - **Center line highlighting** - осі X та Z (0.0) яскравіші (alpha = 0.9)
+    - Final color = lerp між base color та white для центральних ліній
+  - Bind group @group(0) для camera uniform buffer
+
+- ✅ **Створено Grid рендер систему** (`src/rendering/grid.rs`):
+  - `GridVertex` struct - position [f32; 3] + color [f32; 3]
+  - Імплементація bytemuck::Pod + Zeroable для GPU
+  - `vertex_buffer_layout` descriptor для wgpu
+  - `Grid` struct з vertex/index buffers та render pipeline
+  - **Mesh generation:**
+    - Генерація ліній паралельних X та Z осям
+    - Площина Y=0 (XZ plane)
+    - Розмір: -size..+size (за замовчуванням 20 units)
+    - Колір: світло-сірий [0.5, 0.5, 0.5]
+  - **Render pipeline:**
+    - Topology: LineList (малюємо лінії, не трикутники)
+    - Alpha blending включено для fade-out ефекту
+    - Без culling (лінії видимі з обох сторін)
+    - Без depth buffer (поки що)
+
+- ✅ **Інтегровано camera та grid в renderer** (`src/rendering/renderer.rs`):
+  - **Додано поля в WgpuRenderer:**
+    ```rust
+    pub camera: Camera,
+    camera_uniform: CameraUniform,
+    camera_buffer: wgpu::Buffer,
+    camera_bind_group: wgpu::BindGroup,
+    grid: Grid,
+    ```
+  - **Ініціалізація camera:**
+    - Position: Vec3::new(0.0, 3.0, 8.0) - трохи вище та назад
+    - Target: Vec3::ZERO - дивимось на центр
+    - Aspect ratio: width / height
+    - FOV: 45 градусів
+  - **Створено uniform buffer:**
+    - `create_buffer_init()` з CameraUniform
+    - Usage: UNIFORM | COPY_DST
+  - **Створено bind group layout та bind group:**
+    - Binding 0: Camera uniform buffer
+    - Visibility: VERTEX shader
+  - **Створено grid:**
+    - `Grid::new()` з розміром 20 units
+    - Передано camera_bind_group_layout
+  - **Оновлено render() метод:**
+    - Оновлення camera uniform кожен кадр
+    - `queue.write_buffer()` для camera_buffer
+    - Виклик `grid.render()` в render pass
+  - **Оновлено resize() метод:**
+    - Виклик `camera.update_aspect()` при зміні розміру
+
+- ✅ **Додано залежність:** bytemuck до Cargo.toml (було пропущено раніше)
+  ```toml
+  bytemuck = { version = "1.14", features = ["derive"] }
+  ```
+
+- ✅ **Оновлено модульну структуру:**
+  - `src/main.rs` - додано `mod camera;`
+  - `src/rendering/mod.rs` - додано `pub mod grid;` та `pub use grid::Grid;`
+
+- ✅ **Перевірено компіляцію та запуск:**
+  - `cargo check` - успішно
+  - `cargo build` - успішно (3 warnings про unused методи - це нормально для майбутнього використання)
+  - `cargo run` - **3D сітка видима!** ✨
+
+#### Технічні деталі:
+
+**Створені файли:**
+- `src/camera/mod.rs` - camera модуль entry point (30 рядків)
+- `src/camera/camera.rs` - Camera implementation (200+ рядків з документацією)
+- `assets/shaders/grid.wgsl` - Grid WGSL shader (100+ рядків)
+- `src/rendering/grid.rs` - Grid mesh generation та rendering (260+ рядків)
+
+**Змінені файли:**
+- `src/main.rs` - додано `mod camera;`
+- `src/rendering/mod.rs` - експорт Grid
+- `src/rendering/renderer.rs` - інтеграція camera та grid (100+ рядків змін)
+- `Cargo.toml` - додано bytemuck dependency
+
+**Структура коду після сесії:**
+```
+arena_combat/
+├── src/
+│   ├── main.rs                  # ✅ Оновлено (camera mod)
+│   ├── fps_counter.rs
+│   ├── camera/                  # ✅ НОВИЙ
+│   │   ├── mod.rs
+│   │   └── camera.rs
+│   └── rendering/
+│       ├── mod.rs               # ✅ Оновлено (Grid export)
+│       ├── renderer.rs          # ✅ Оновлено (camera + grid)
+│       └── grid.rs              # ✅ НОВИЙ
+├── assets/
+│   └── shaders/                 # ✅ НОВИЙ
+│       └── grid.wgsl            # ✅ НОВИЙ
+├── Cargo.toml                   # ✅ Оновлено (bytemuck)
+└── PROGRESS.md                  # ✅ Оновлено
+```
+
+#### Проблеми та рішення:
+
+**Проблема 1:** Lifetime error з `Surface<'static>`
+```
+error: lifetime may not live long enough
+  --> src\rendering\renderer.rs:138:21
+   |
+surface: wgpu::Surface<'static> requires '1 must outlive 'static
+```
+**Рішення:** Використано `Arc<Window>` замість `&Window`:
+- Змінено сигнатуру: `pub async fn new(window: Arc<Window>)`
+- `instance.create_surface(window.clone())`
+- Зберігаємо `window: Arc<Window>` в struct
+
+**Проблема 2:** Unresolved import CameraUniform
+```
+error[E0432]: unresolved import `crate::camera::CameraUniform`
+  --> src\rendering\renderer.rs:68:27
+```
+**Рішення:** Оновлено `src/camera/mod.rs`:
+```rust
+pub use camera::{Camera, CameraUniform};  // Було тільки Camera
+```
+
+**Проблема 3:** Missing bytemuck dependency
+```
+error[E0433]: failed to resolve: use of undeclared crate or module `bytemuck`
+  --> src\camera\camera.rs:61:10
+```
+**Рішення:** Додано до Cargo.toml:
+```toml
+bytemuck = { version = "1.14", features = ["derive"] }
+```
+
+#### Математика та координати:
+
+**Coordinate System:**
+- **Y-up, right-handed** (OpenGL convention)
+- X: вправо
+- Y: вгору
+- Z: на глядача
+
+**Camera параметри:**
+- Position: (0, 3, 8) - 3 units вище підлоги, 8 units назад
+- Target: (0, 0, 0) - центр сцени
+- FOV: 45° vertical
+- Near plane: 0.1
+- Far plane: 100.0
+
+**Grid параметри:**
+- Розмір: 20x20 units (-10 до +10 по X та Z)
+- Інтервал: 1.0 unit між лініями
+- Кількість ліній: 41 вертикальних + 41 горизонтальних = 82 лінії
+- Кількість вершин: 82 * 2 = 164 vertices
+
+**Projection conversion:**
+- OpenGL NDC: X[-1,1], Y[-1,1], Z[-1,1]
+- wgpu NDC: X[-1,1], Y[-1,1], Z[0,1] (Vulkan/DirectX style)
+- Конверсія через `opengl_to_wgpu` matrix:
+  - Z_wgpu = Z_opengl * 0.5 + 0.5
+
+#### Warnings (очікувані):
+```
+warning: method `position` is never used
+  --> src\camera\camera.rs:89:12
+   |
+warning: method `target` is never used
+  --> src\camera\camera.rs:94:12
+   |
+warning: method `size` is never used
+  --> src\rendering\renderer.rs:354:12
+```
+**Пояснення:** Ці методи будуть використовуватись пізніше (camera controls, UI).
+**Дія:** Ігноруємо (це getter методи для майбутнього використання).
+
+#### Що працює:
+
+- [x] 3D camera з perspective projection
+- [x] Coordinate system (Y-up, right-handed)
+- [x] Grid на підлозі (XZ plane, Y=0)
+- [x] Grid shader з fade-out ефектом
+- [x] Center lines highlighting (X=0, Z=0)
+- [x] View-projection matrix оновлюється кожен кадр
+- [x] Resize коректно оновлює aspect ratio
+- [x] FPS counter працює (60 FPS з VSync)
+- [x] Темно-синій background (arena atmosphere)
+
+#### Візуальний результат:
+
+Тепер при запуску `cargo run` бачимо:
+- Темно-синій фон (RGB: 0.1, 0.2, 0.3)
+- Координатна сітка 20x20 на підлозі
+- Сітка з перспективою (ближче = більша, далі = менша)
+- Fade-out ефект на відстані
+- Яскравіші центральні лінії (осі X та Z)
+- FPS counter в заголовку (~60 FPS)
+
+#### Статус Phase 1, Week 2:
+
+**Завершено:**
+- ✅ Базове вікно + event loop (Сесія 3)
+- ✅ wgpu renderer + clear color (Сесія 4)
+- ✅ FPS counter (Сесія 4)
+- ✅ 3D camera з perspective projection (Сесія 5)
+- ✅ Coordinate system setup (Сесія 5)
+- ✅ Grid visualization (Сесія 5)
+- ✅ Grid shader з WGSL (Сесія 5)
+
+**В процесі:**
+- ⏳ Camera controls (mouse look) - залишилось на майбутнє
+
+#### Наступні кроки (Сесія 6):
+
+**Option A - Camera Controls:**
+- [ ] Додати mouse input handling (MouseMotion event)
+- [ ] Реалізувати orbit camera controls (drag to rotate)
+- [ ] Додати keyboard controls (WASD для переміщення камери)
+- [ ] Опційно: zoom (mouse wheel)
+
+**Option B - 3D Models:**
+- [ ] Завантажити простий GLTF model (куб або конус для тестування)
+- [ ] Створити vertex/index buffers для mesh
+- [ ] Базовий shader для 3D моделі
+- [ ] Відрендерити модель на сцені
+
+**Option C - Delta Time:**
+- [ ] Додати delta time tracking
+- [ ] Підготувати fixed timestep loop (60 FPS)
+- [ ] Розділити render FPS від game logic FPS
+
+**Рекомендація:** Почати з Option A (Camera Controls) - це дасть можливість оглядати майбутні 3D моделі з різних кутів.
 
 ---
 
