@@ -1,6 +1,8 @@
 # BUG 001: Player body doesn't rotate with camera
 
-## Status: RESOLVED ✓
+## Status: NOT RESOLVED ❌
+
+**Див. BUG_001_METHODOLOGY.md для плану наступних кроків!**
 
 ## Original Problem
 Player body mesh doesn't rotate when camera rotates around player.
