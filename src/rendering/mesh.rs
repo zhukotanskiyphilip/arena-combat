@@ -83,6 +83,217 @@ impl MeshVertex {
     }
 }
 
+/// Генерує циліндр вздовж Y-осі
+///
+/// # Аргументи
+/// * `radius` - радіус циліндра
+/// * `height` - висота циліндра
+/// * `segments` - кількість сегментів по колу (більше = гладкіший)
+/// * `color` - колір всіх вершин
+///
+/// # Повертає
+/// (vertices, indices) - вершини та індекси для rendering
+pub fn generate_cylinder(radius: f32, height: f32, segments: u32, color: [f32; 3]) -> (Vec<MeshVertex>, Vec<u16>) {
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+
+    let half_height = height / 2.0;
+
+    // Генеруємо бокову поверхню
+    for i in 0..=segments {
+        let angle = (i as f32 / segments as f32) * std::f32::consts::TAU;
+        let x = angle.cos() * radius;
+        let z = angle.sin() * radius;
+        let nx = angle.cos();
+        let nz = angle.sin();
+
+        // Bottom vertex
+        vertices.push(MeshVertex {
+            position: [x, -half_height, z],
+            normal: [nx, 0.0, nz],
+            color,
+        });
+
+        // Top vertex
+        vertices.push(MeshVertex {
+            position: [x, half_height, z],
+            normal: [nx, 0.0, nz],
+            color,
+        });
+    }
+
+    // Індекси для бокової поверхні
+    for i in 0..segments {
+        let base = i * 2;
+        // Two triangles per quad
+        indices.push(base as u16);
+        indices.push((base + 1) as u16);
+        indices.push((base + 2) as u16);
+
+        indices.push((base + 2) as u16);
+        indices.push((base + 1) as u16);
+        indices.push((base + 3) as u16);
+    }
+
+    // Top cap
+    let top_center_idx = vertices.len() as u16;
+    vertices.push(MeshVertex {
+        position: [0.0, half_height, 0.0],
+        normal: [0.0, 1.0, 0.0],
+        color,
+    });
+
+    for i in 0..=segments {
+        let angle = (i as f32 / segments as f32) * std::f32::consts::TAU;
+        let x = angle.cos() * radius;
+        let z = angle.sin() * radius;
+
+        vertices.push(MeshVertex {
+            position: [x, half_height, z],
+            normal: [0.0, 1.0, 0.0],
+            color,
+        });
+    }
+
+    // Top cap indices
+    for i in 0..segments {
+        let base = top_center_idx + 1 + i as u16;
+        indices.push(top_center_idx);
+        indices.push(base + 1);
+        indices.push(base);
+    }
+
+    // Bottom cap
+    let bottom_center_idx = vertices.len() as u16;
+    vertices.push(MeshVertex {
+        position: [0.0, -half_height, 0.0],
+        normal: [0.0, -1.0, 0.0],
+        color,
+    });
+
+    for i in 0..=segments {
+        let angle = (i as f32 / segments as f32) * std::f32::consts::TAU;
+        let x = angle.cos() * radius;
+        let z = angle.sin() * radius;
+
+        vertices.push(MeshVertex {
+            position: [x, -half_height, z],
+            normal: [0.0, -1.0, 0.0],
+            color,
+        });
+    }
+
+    // Bottom cap indices (reversed winding)
+    for i in 0..segments {
+        let base = bottom_center_idx + 1 + i as u16;
+        indices.push(bottom_center_idx);
+        indices.push(base);
+        indices.push(base + 1);
+    }
+
+    (vertices, indices)
+}
+
+/// Генерує сферу з центром в (0, 0, 0)
+///
+/// # Аргументи
+/// * `radius` - радіус сфери
+/// * `h_segments` - горизонтальні сегменти (longitude)
+/// * `v_segments` - вертикальні сегменти (latitude)
+/// * `color` - колір всіх вершин
+///
+/// # Повертає
+/// (vertices, indices) - вершини та індекси для rendering
+pub fn generate_sphere(radius: f32, h_segments: u32, v_segments: u32, color: [f32; 3]) -> (Vec<MeshVertex>, Vec<u16>) {
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+
+    // Generate vertices
+    for v in 0..=v_segments {
+        let v_angle = (v as f32 / v_segments as f32) * std::f32::consts::PI;
+        let y = v_angle.cos();
+        let ring_radius = v_angle.sin();
+
+        for h in 0..=h_segments {
+            let h_angle = (h as f32 / h_segments as f32) * std::f32::consts::TAU;
+            let x = ring_radius * h_angle.cos();
+            let z = ring_radius * h_angle.sin();
+
+            vertices.push(MeshVertex {
+                position: [x * radius, y * radius, z * radius],
+                normal: [x, y, z], // Normalized (unit sphere)
+                color,
+            });
+        }
+    }
+
+    // Generate indices
+    for v in 0..v_segments {
+        for h in 0..h_segments {
+            let current = v * (h_segments + 1) + h;
+            let next = current + h_segments + 1;
+
+            // Two triangles per quad
+            indices.push(current as u16);
+            indices.push(next as u16);
+            indices.push((current + 1) as u16);
+
+            indices.push((current + 1) as u16);
+            indices.push(next as u16);
+            indices.push((next + 1) as u16);
+        }
+    }
+
+    (vertices, indices)
+}
+
+/// Генерує манекен гравця (капсулоподібна фігура)
+///
+/// Складається з:
+/// - Тіло (циліндр)
+/// - Голова (сфера зверху)
+///
+/// # Аргументи
+/// * `body_radius` - радіус тіла
+/// * `body_height` - висота тіла (без голови)
+/// * `head_radius` - радіус голови
+/// * `body_color` - колір тіла
+/// * `head_color` - колір голови
+///
+/// # Повертає
+/// (vertices, indices) - вершини та індекси для rendering
+pub fn generate_player_mannequin(
+    body_radius: f32,
+    body_height: f32,
+    head_radius: f32,
+    body_color: [f32; 3],
+    head_color: [f32; 3],
+) -> (Vec<MeshVertex>, Vec<u16>) {
+    let segments = 12; // Достатньо для гладкого вигляду
+
+    // Генеруємо тіло (циліндр)
+    let (mut vertices, mut indices) = generate_cylinder(body_radius, body_height, segments, body_color);
+
+    // Генеруємо голову (сфера)
+    let (head_vertices, head_indices) = generate_sphere(head_radius, segments, segments / 2, head_color);
+
+    // Offset голови вгору (на верх тіла + радіус голови)
+    let head_y_offset = body_height / 2.0 + head_radius * 0.8; // Трохи втоплена в тіло
+
+    // Додаємо голову з offset
+    let vertex_offset = vertices.len() as u16;
+    for mut v in head_vertices {
+        v.position[1] += head_y_offset;
+        vertices.push(v);
+    }
+
+    for idx in head_indices {
+        indices.push(idx + vertex_offset);
+    }
+
+    (vertices, indices)
+}
+
 /// Генерує куб з центром в (0, 0, 0)
 ///
 /// # Аргументи

@@ -1297,6 +1297,169 @@ self.delta_time = raw_delta.min(0.1);
 
 ---
 
+### 2025-12-14 (Сесія 10): Player Character + Movement 🎮
+**Тривалість:** ~30 хвилин
+**Фаза:** Phase 1 - Week 3-4 - Player Character
+
+#### Виконано:
+- ✅ **Створено Player модуль** (`src/player/`):
+  - `player/mod.rs` - модуль entry point
+  - `player/player.rs` - Player struct:
+    - Position (Vec3 в world space)
+    - Yaw (кут повороту навколо Y)
+    - Movement speed (5 units/second)
+    - Turn speed (3 rad/second)
+    - Методи: `forward()`, `right()`, `move_forward()`, `strafe()`, `turn()`, `update()`
+    - Frame-rate independent movement через delta time
+
+- ✅ **Створено mesh примітиви** (`src/rendering/mesh.rs`):
+  - `generate_cylinder()` - циліндр вздовж Y-осі
+  - `generate_sphere()` - сфера з параметричним tessellation
+  - `generate_player_mannequin()` - капсулоподібна фігура гравця:
+    - Тіло: циліндр (radius=0.3, height=1.5)
+    - Голова: сфера (radius=0.25) на верху
+    - Body color: синій [0.2, 0.6, 0.9]
+    - Head color: тілесний [0.9, 0.8, 0.7]
+
+- ✅ **Інтегровано player в renderer** (`src/rendering/renderer.rs`):
+  - `player_mesh: Mesh` - mesh для візуалізації гравця
+  - `update_player(player)` - оновлення позиції та обертання mesh
+  - Player рендериться разом з кубами та grid
+
+- ✅ **Додано player movement в main.rs**:
+  - W/S - рух вперед/назад
+  - A/D - strafe вліво/вправо
+  - Q/E - поворот вліво/вправо
+  - Camera слідує за гравцем (offset: 0, 5, 10)
+
+- ✅ **Оновлено InputState** (`src/input/input_state.rs`):
+  - Додано `is_q_pressed()` та `is_e_pressed()` для повороту
+
+#### Технічні деталі:
+
+**Створені файли:**
+- `src/player/mod.rs` - player модуль (25 рядків)
+- `src/player/player.rs` - Player struct (120+ рядків)
+
+**Змінені файли:**
+- `src/main.rs` - player integration, movement logic
+- `src/rendering/renderer.rs` - player_mesh, update_player()
+- `src/rendering/mesh.rs` - cylinder, sphere, mannequin generators
+- `src/input/input_state.rs` - Q/E key methods
+
+**Структура коду після сесії:**
+```
+arena_combat/
+├── src/
+│   ├── main.rs                  # ✅ Оновлено (player)
+│   ├── fps_counter.rs
+│   ├── input/
+│   │   ├── mod.rs
+│   │   └── input_state.rs       # ✅ Оновлено (Q/E)
+│   ├── camera/
+│   │   ├── mod.rs
+│   │   └── camera.rs
+│   ├── transform/
+│   │   ├── mod.rs
+│   │   └── transform.rs
+│   ├── time/
+│   │   ├── mod.rs
+│   │   └── game_time.rs
+│   ├── player/                  # ✅ НОВИЙ
+│   │   ├── mod.rs
+│   │   └── player.rs
+│   └── rendering/
+│       ├── mod.rs
+│       ├── renderer.rs          # ✅ Оновлено (player_mesh)
+│       ├── grid.rs
+│       └── mesh.rs              # ✅ Оновлено (primitives)
+└── PROGRESS.md                  # ✅ Оновлено
+```
+
+#### Player Movement Math:
+
+**Forward vector (based on yaw):**
+```rust
+// yaw=0 → дивиться в -Z
+// Обертання навколо Y
+forward = Vec3::new(-sin(yaw), 0.0, -cos(yaw))
+right = Vec3::new(cos(yaw), 0.0, -sin(yaw))
+```
+
+**Frame-rate independent:**
+```rust
+// Position change = direction * speed * delta
+position += forward * amount * move_speed * delta;
+```
+
+#### Controls Summary:
+
+| Input | Action | Details |
+|-------|--------|---------|
+| W | Move Forward | Player forward direction |
+| S | Move Backward | Player backward |
+| A | Strafe Left | Perpendicular to forward |
+| D | Strafe Right | Perpendicular to forward |
+| Q | Turn Left | Rotate player CCW |
+| E | Turn Right | Rotate player CW |
+| Left Mouse + Drag | Orbit Camera | Обертання камери |
+| Mouse Wheel | Zoom | Відстань камери |
+
+#### Що працює:
+
+- [x] Player mannequin рендериться
+- [x] WASD рух працює (frame-rate independent)
+- [x] Q/E поворот гравця
+- [x] Camera слідує за гравцем
+- [x] Куби продовжують обертатися
+- [x] FPS стабільний (~60)
+
+#### Візуальний результат:
+
+Тепер при запуску `cargo run` бачимо:
+- Темно-синій фон
+- Координатна сітка 20x20
+- 4 куби що обертаються
+- **Синій манекен гравця** 🎮
+- Манекен рухається по WASD
+- Манекен повертається по Q/E
+- Camera слідує за гравцем
+
+#### Статус Phase 1, Week 3-4:
+
+**Завершено:**
+- ✅ Базове вікно + event loop (Сесія 3)
+- ✅ wgpu renderer + clear color (Сесія 4)
+- ✅ FPS counter (Сесія 4)
+- ✅ 3D camera з perspective projection (Сесія 5)
+- ✅ Grid visualization (Сесія 5)
+- ✅ Camera controls - orbit, zoom, pan (Сесія 6)
+- ✅ 3D Mesh rendering + Cube + Depth Buffer (Сесія 7)
+- ✅ Transform System + Multiple Objects (Сесія 8)
+- ✅ Delta Time + Cube Animation (Сесія 9)
+- ✅ **Player Character + Movement (Сесія 10)** 🎮
+
+#### Наступні кроки (Сесія 11):
+
+**Option A - Combat System Basics:**
+- [ ] Attack direction (mouse → напрямок удару)
+- [ ] Basic attack animation (swing)
+- [ ] Hitbox system
+
+**Option B - Third Person Camera:**
+- [ ] Camera за спиною гравця
+- [ ] Mouse look впливає на камеру
+- [ ] Player повертається разом з камерою
+
+**Option C - Collision Detection:**
+- [ ] Player-cube collision
+- [ ] Basic physics (не проходити крізь об'єкти)
+- [ ] Ground collision
+
+**Рекомендація:** Option B (Third Person Camera) - для combat потрібен кращий camera control.
+
+---
+
 ## 💡 Ключові концепції проекту
 
 ### Філософія бою (з GDD):

@@ -233,6 +233,16 @@ impl InputState {
     pub fn is_ctrl_pressed(&self) -> bool {
         self.is_key_pressed(KeyCode::ControlLeft) || self.is_key_pressed(KeyCode::ControlRight)
     }
+
+    /// Перевіряє чи натиснута Q (поворот вліво)
+    pub fn is_q_pressed(&self) -> bool {
+        self.is_key_pressed(KeyCode::KeyQ)
+    }
+
+    /// Перевіряє чи натиснута E (поворот вправо)
+    pub fn is_e_pressed(&self) -> bool {
+        self.is_key_pressed(KeyCode::KeyE)
+    }
 }
 
 impl Default for InputState {

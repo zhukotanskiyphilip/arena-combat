@@ -67,9 +67,10 @@ use winit::window::Window;
 
 use crate::camera::{Camera, CameraUniform};
 use crate::transform::Transform;
+use crate::player::Player;
 use super::grid::Grid;
-use super::mesh::{Mesh, generate_cube};
-use glam::Vec3;
+use super::mesh::{Mesh, generate_cube, generate_player_mannequin};
+use glam::{Vec3, Quat};
 
 /// Основний renderer на базі wgpu
 ///
@@ -115,6 +116,9 @@ pub struct WgpuRenderer {
 
     /// Cubes (тестові об'єкти)
     cubes: Vec<Mesh>,
+
+    /// Player mesh (манекен)
+    player_mesh: Mesh,
 
     /// Camera bind group layout (зберігаємо для створення нових mesh)
     camera_bind_group_layout: wgpu::BindGroupLayout,
@@ -308,9 +312,30 @@ impl WgpuRenderer {
         );
         cubes.push(cube4);
 
+        // 13. Створити Player mesh (манекен)
+        let (player_vertices, player_indices) = generate_player_mannequin(
+            0.3,                      // body_radius
+            1.5,                      // body_height
+            0.25,                     // head_radius
+            [0.2, 0.6, 0.9],          // body_color (синій)
+            [0.9, 0.8, 0.7],          // head_color (тілесний)
+        );
+        // Зміщуємо центр манекена вниз щоб ноги стояли на підлозі
+        // body_height=1.5, отже центр тіла на 0, а низ на -0.75
+        // Потрібно підняти на 0.75 щоб низ був на 0
+        let player_mesh = Mesh::new(
+            &device,
+            &config,
+            &player_vertices,
+            &player_indices,
+            &camera_bind_group_layout,
+            Transform::new(Vec3::new(0.0, 0.75, 0.0)), // Player at origin, lifted to stand on ground
+        );
+
         log::info!("wgpu renderer готовий до роботи!");
         log::info!("Camera: position={:?}, target={:?}", camera.position, camera.target);
         log::info!("Створено {} кубів з різними позиціями", cubes.len());
+        log::info!("Створено player mannequin mesh");
 
         Self {
             surface,
@@ -327,6 +352,7 @@ impl WgpuRenderer {
             depth_texture,
             depth_view,
             cubes,
+            player_mesh,
             camera_bind_group_layout,
         }
     }
@@ -452,6 +478,9 @@ impl WgpuRenderer {
                 cube.render(&mut render_pass, &self.camera_bind_group);
             }
 
+            // Малюємо player
+            self.player_mesh.render(&mut render_pass, &self.camera_bind_group);
+
             // Малюємо grid (після mesh щоб правильно відображався поверх через alpha)
             self.grid.render(&mut render_pass, &self.camera_bind_group);
             // render_pass автоматично завершується при drop
@@ -469,6 +498,21 @@ impl WgpuRenderer {
     /// Повертає поточний розмір вікна
     pub fn size(&self) -> winit::dpi::PhysicalSize<u32> {
         self.size
+    }
+
+    /// Оновлює позицію player mesh на основі Player struct
+    ///
+    /// # Аргументи
+    /// * `player` - Player struct з поточною позицією та yaw
+    pub fn update_player(&mut self, player: &Player) {
+        // Оновлюємо позицію mesh (з offset для центрування тіла)
+        self.player_mesh.transform.position = player.position + Vec3::new(0.0, 0.75, 0.0);
+
+        // Оновлюємо обертання mesh (yaw)
+        self.player_mesh.transform.rotation = Quat::from_rotation_y(player.yaw);
+
+        // Оновлюємо GPU buffer
+        self.player_mesh.update_transform(&self.queue);
     }
 
     /// Оновлює анімації об'єктів

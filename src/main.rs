@@ -68,11 +68,13 @@ mod camera;
 mod input;
 mod transform;
 mod time;
+mod player;
 
 use rendering::WgpuRenderer;
 use fps_counter::FpsCounter;
 use input::InputState;
 use time::GameTime;
+use player::Player;
 use std::sync::Arc;
 use winit::{
     application::ApplicationHandler,
@@ -93,6 +95,7 @@ struct App {
     fps_counter: FpsCounter,
     input_state: InputState,
     game_time: GameTime,
+    player: Player,
 }
 
 impl ApplicationHandler for App {
@@ -189,53 +192,74 @@ impl ApplicationHandler for App {
                     renderer.update_animations(self.game_time.delta());
                 }
 
+                // === PLAYER UPDATE ===
+                {
+                    let delta = self.game_time.delta();
+
+                    // Обчислюємо input для player
+                    let mut forward_input = 0.0;
+                    let mut strafe_input = 0.0;
+                    let mut turn_input = 0.0;
+
+                    // W/S - рух вперед/назад
+                    if self.input_state.is_w_pressed() {
+                        forward_input += 1.0;
+                    }
+                    if self.input_state.is_s_pressed() {
+                        forward_input -= 1.0;
+                    }
+
+                    // A/D - strafe вліво/вправо
+                    if self.input_state.is_a_pressed() {
+                        strafe_input -= 1.0;
+                    }
+                    if self.input_state.is_d_pressed() {
+                        strafe_input += 1.0;
+                    }
+
+                    // Q/E - поворот вліво/вправо
+                    if self.input_state.is_q_pressed() {
+                        turn_input -= 1.0;
+                    }
+                    if self.input_state.is_e_pressed() {
+                        turn_input += 1.0;
+                    }
+
+                    // Оновлюємо player
+                    self.player.update(forward_input, strafe_input, turn_input, delta);
+                }
+
+                // === PLAYER MESH UPDATE ===
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.update_player(&self.player);
+                }
+
                 // === CAMERA UPDATE ===
                 if let Some(renderer) = &mut self.renderer {
-                    // 1. Orbit camera (mouse drag with left button)
+                    // Camera слідує за гравцем
+                    // Розташовуємо камеру позаду та вище гравця
+                    let camera_offset = glam::Vec3::new(0.0, 5.0, 10.0); // Вище та позаду
+                    let player_pos = self.player.position;
+
+                    // Камера дивиться на гравця (трохи вище, на рівень грудей)
+                    let target = player_pos + glam::Vec3::new(0.0, 1.0, 0.0);
+                    let camera_pos = player_pos + camera_offset;
+
+                    renderer.camera.position = camera_pos;
+                    renderer.camera.target = target;
+
+                    // Orbit camera навколо гравця (mouse drag with left button)
                     if self.input_state.mouse_left {
                         let (delta_x, delta_y) = self.input_state.mouse_delta();
 
                         // Конвертуємо pixel delta в радіани
-                        // Чутливість: 0.005 радіан на піксель (~0.3° на піксель)
                         let sensitivity = 0.005;
-                        let delta_yaw = -(delta_x as f32) * sensitivity;   // Мінус для інтуїтивного руху
-                        let delta_pitch = -(delta_y as f32) * sensitivity; // Мінус для інтуїтивного руху
+                        let delta_yaw = -(delta_x as f32) * sensitivity;
+                        let delta_pitch = -(delta_y as f32) * sensitivity;
 
                         if delta_x.abs() > 0.1 || delta_y.abs() > 0.1 {
                             renderer.camera.orbit(delta_yaw, delta_pitch);
                         }
-                    }
-
-                    // 2. Pan camera (WASD)
-                    let mut pan_offset = glam::Vec3::ZERO;
-                    let pan_speed = 0.1; // 0.1 units per frame
-
-                    if self.input_state.is_w_pressed() {
-                        // W = forward (в напрямку camera forward проекція на XZ plane)
-                        let forward = renderer.camera.forward();
-                        let forward_xz = glam::Vec3::new(forward.x, 0.0, forward.z).normalize();
-                        pan_offset += forward_xz * pan_speed;
-                    }
-                    if self.input_state.is_s_pressed() {
-                        // S = backward
-                        let forward = renderer.camera.forward();
-                        let forward_xz = glam::Vec3::new(forward.x, 0.0, forward.z).normalize();
-                        pan_offset -= forward_xz * pan_speed;
-                    }
-                    if self.input_state.is_a_pressed() {
-                        // A = left
-                        let right = renderer.camera.right();
-                        pan_offset -= right * pan_speed;
-                    }
-                    if self.input_state.is_d_pressed() {
-                        // D = right
-                        let right = renderer.camera.right();
-                        pan_offset += right * pan_speed;
-                    }
-
-                    // Застосовуємо pan якщо є offset
-                    if pan_offset.length() > 0.01 {
-                        renderer.camera.pan(pan_offset);
                     }
 
                     // Скидаємо mouse delta після обробки
@@ -307,6 +331,7 @@ fn main() {
         fps_counter: FpsCounter::new(),
         input_state: InputState::new(),
         game_time: GameTime::new(),
+        player: Player::new(glam::Vec3::new(0.0, 0.0, 5.0)), // Старт трохи попереду
     };
 
     // Запустити event loop
