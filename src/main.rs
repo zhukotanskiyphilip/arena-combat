@@ -142,7 +142,7 @@ impl ApplicationHandler for App {
                 };
 
                 if let Some(renderer) = &mut self.renderer {
-                    renderer.camera.zoom(zoom_amount);
+                    renderer.camera.zoom_third_person(zoom_amount);
                 }
             }
 
@@ -192,41 +192,43 @@ impl ApplicationHandler for App {
                     renderer.update_animations(self.game_time.delta());
                 }
 
-                // === PLAYER UPDATE ===
-                {
+                // === PLAYER UPDATE (Camera-relative movement) ===
+                if let Some(renderer) = &self.renderer {
                     let delta = self.game_time.delta();
 
-                    // Обчислюємо input для player
-                    let mut forward_input = 0.0;
-                    let mut strafe_input = 0.0;
-                    let mut turn_input = 0.0;
+                    // Отримуємо camera directions для camera-relative руху
+                    let cam_forward = renderer.camera.forward_xz();
+                    let cam_right = renderer.camera.right_xz();
 
-                    // W/S - рух вперед/назад
+                    // Обчислюємо input
+                    let mut move_dir = glam::Vec3::ZERO;
+
+                    // W/S - рух вперед/назад (відносно камери)
                     if self.input_state.is_w_pressed() {
-                        forward_input += 1.0;
+                        move_dir += cam_forward;
                     }
                     if self.input_state.is_s_pressed() {
-                        forward_input -= 1.0;
+                        move_dir -= cam_forward;
                     }
 
-                    // A/D - strafe вліво/вправо
+                    // A/D - strafe вліво/вправо (відносно камери)
                     if self.input_state.is_a_pressed() {
-                        strafe_input -= 1.0;
+                        move_dir -= cam_right;
                     }
                     if self.input_state.is_d_pressed() {
-                        strafe_input += 1.0;
+                        move_dir += cam_right;
                     }
 
-                    // Q/E - поворот вліво/вправо
-                    if self.input_state.is_q_pressed() {
-                        turn_input -= 1.0;
-                    }
-                    if self.input_state.is_e_pressed() {
-                        turn_input += 1.0;
-                    }
+                    // Нормалізуємо якщо є рух (щоб діагональний рух не був швидшим)
+                    if move_dir.length_squared() > 0.01 {
+                        move_dir = move_dir.normalize();
 
-                    // Оновлюємо player
-                    self.player.update(forward_input, strafe_input, turn_input, delta);
+                        // Рухаємо гравця
+                        self.player.position += move_dir * self.player.move_speed * delta;
+
+                        // Повертаємо гравця в напрямку руху
+                        self.player.yaw = move_dir.x.atan2(-move_dir.z);
+                    }
                 }
 
                 // === PLAYER MESH UPDATE ===
@@ -234,33 +236,27 @@ impl ApplicationHandler for App {
                     renderer.update_player(&self.player);
                 }
 
-                // === CAMERA UPDATE ===
+                // === CAMERA UPDATE (Third Person) ===
                 if let Some(renderer) = &mut self.renderer {
-                    // Camera слідує за гравцем
-                    // Розташовуємо камеру позаду та вище гравця
-                    let camera_offset = glam::Vec3::new(0.0, 5.0, 10.0); // Вище та позаду
-                    let player_pos = self.player.position;
-
-                    // Камера дивиться на гравця (трохи вище, на рівень грудей)
-                    let target = player_pos + glam::Vec3::new(0.0, 1.0, 0.0);
-                    let camera_pos = player_pos + camera_offset;
-
-                    renderer.camera.position = camera_pos;
-                    renderer.camera.target = target;
-
-                    // Orbit camera навколо гравця (mouse drag with left button)
-                    if self.input_state.mouse_left {
+                    // Mouse look (права кнопка миші)
+                    if self.input_state.mouse_right {
                         let (delta_x, delta_y) = self.input_state.mouse_delta();
 
                         // Конвертуємо pixel delta в радіани
-                        let sensitivity = 0.005;
-                        let delta_yaw = -(delta_x as f32) * sensitivity;
-                        let delta_pitch = -(delta_y as f32) * sensitivity;
+                        let sensitivity = 0.003;
+                        let delta_yaw = (delta_x as f32) * sensitivity;
+                        let delta_pitch = (delta_y as f32) * sensitivity;
 
                         if delta_x.abs() > 0.1 || delta_y.abs() > 0.1 {
-                            renderer.camera.orbit(delta_yaw, delta_pitch);
+                            renderer.camera.rotate_third_person(delta_yaw, delta_pitch);
                         }
                     }
+
+                    // Zoom (mouse wheel)
+                    // Вже обробляється в MouseWheel event, але оновимо для third person
+
+                    // Оновлюємо позицію камери за гравцем
+                    renderer.camera.update_third_person(self.player.position, 1.2);
 
                     // Скидаємо mouse delta після обробки
                     self.input_state.reset_mouse_delta();

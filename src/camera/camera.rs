@@ -78,6 +78,16 @@ pub struct Camera {
 
     /// Дальня площина відсікання
     pub zfar: f32,
+
+    // === Third Person Camera ===
+    /// Yaw (горизонтальний кут) навколо target (радіани)
+    pub yaw: f32,
+
+    /// Pitch (вертикальний кут) навколо target (радіани)
+    pub pitch: f32,
+
+    /// Відстань камери від target
+    pub distance: f32,
 }
 
 impl Camera {
@@ -100,6 +110,16 @@ impl Camera {
     /// );
     /// ```
     pub fn new(position: Vec3, target: Vec3, aspect: f32) -> Self {
+        // Обчислюємо initial yaw/pitch/distance з position та target
+        let offset = position - target;
+        let distance = offset.length();
+        let yaw = offset.z.atan2(offset.x);
+        let pitch = if distance > 0.01 {
+            (offset.y / distance).asin()
+        } else {
+            0.2 // Default pitch ~11°
+        };
+
         Self {
             position,
             target,
@@ -108,6 +128,9 @@ impl Camera {
             aspect,
             znear: 0.1,
             zfar: 100.0,
+            yaw,
+            pitch,
+            distance: distance.max(1.0),
         }
     }
 
@@ -301,6 +324,81 @@ impl Camera {
     pub fn pan(&mut self, offset: Vec3) {
         self.position += offset;
         self.target += offset;
+    }
+
+    // ========================================================================
+    // THIRD PERSON CAMERA
+    // ========================================================================
+
+    /// Оновлює камеру для third person view
+    ///
+    /// Камера позиціонується за спиною target на основі yaw/pitch/distance.
+    ///
+    /// # Аргументи
+    /// * `target_pos` - Позиція гравця (target point)
+    /// * `target_height` - Висота точки на яку дивиться камера (груди гравця)
+    pub fn update_third_person(&mut self, target_pos: Vec3, target_height: f32) {
+        // Target = позиція гравця + height offset (дивимось на груди)
+        self.target = target_pos + Vec3::new(0.0, target_height, 0.0);
+
+        // Обчислюємо позицію камери на основі spherical coordinates
+        // yaw = горизонтальний кут (навколо Y)
+        // pitch = вертикальний кут (від горизонту)
+        let camera_offset = Vec3::new(
+            self.distance * self.pitch.cos() * self.yaw.cos(),
+            self.distance * self.pitch.sin(),
+            self.distance * self.pitch.cos() * self.yaw.sin(),
+        );
+
+        self.position = self.target + camera_offset;
+    }
+
+    /// Обертає third person камеру (mouse look)
+    ///
+    /// # Аргументи
+    /// * `delta_yaw` - Зміна горизонтального кута (радіани)
+    /// * `delta_pitch` - Зміна вертикального кута (радіани)
+    pub fn rotate_third_person(&mut self, delta_yaw: f32, delta_pitch: f32) {
+        self.yaw += delta_yaw;
+        self.pitch += delta_pitch;
+
+        // Обмежуємо pitch щоб камера не перевернулась
+        let max_pitch = 85.0_f32.to_radians();
+        let min_pitch = -30.0_f32.to_radians(); // Не дозволяємо дивитись знизу вгору
+        self.pitch = self.pitch.clamp(min_pitch, max_pitch);
+
+        // Нормалізуємо yaw до [-PI, PI]
+        while self.yaw > std::f32::consts::PI {
+            self.yaw -= std::f32::consts::TAU;
+        }
+        while self.yaw < -std::f32::consts::PI {
+            self.yaw += std::f32::consts::TAU;
+        }
+    }
+
+    /// Zoom для third person (змінює distance)
+    ///
+    /// # Аргументи
+    /// * `delta` - Зміна відстані (+ = ближче, - = далі)
+    pub fn zoom_third_person(&mut self, delta: f32) {
+        self.distance -= delta;
+        self.distance = self.distance.clamp(2.0, 20.0);
+    }
+
+    /// Повертає forward direction камери в XZ plane (для руху гравця)
+    ///
+    /// Це напрямок "вперед" з точки зору камери (від камери до target).
+    pub fn forward_xz(&self) -> Vec3 {
+        // Camera offset = (cos(yaw), 0, sin(yaw)) * distance
+        // Forward = протилежний напрямок = від камери до target
+        Vec3::new(-self.yaw.cos(), 0.0, -self.yaw.sin()).normalize()
+    }
+
+    /// Повертає right direction камери в XZ plane (для руху гравця)
+    pub fn right_xz(&self) -> Vec3 {
+        // Right = forward повернутий на 90° за годинниковою стрілкою (в XZ plane)
+        // Якщо forward = (-cos, 0, -sin), то right = (-sin, 0, cos)
+        Vec3::new(self.yaw.sin(), 0.0, -self.yaw.cos()).normalize()
     }
 }
 
