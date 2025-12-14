@@ -33,7 +33,9 @@
 
 pub mod renderer;
 pub mod grid;
+pub mod mesh;
 
-// Реєкспортуємо WgpuRenderer для зручності
+// Реєкспортуємо для зручності
 pub use renderer::WgpuRenderer;
 pub use grid::Grid;
+pub use mesh::{Mesh, MeshVertex, generate_cube};

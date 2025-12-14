@@ -814,6 +814,181 @@ warning: methods `mouse_position`, `is_space_pressed`, `is_shift_pressed`, `is_c
 
 ---
 
+### 2025-12-14 (Сесія 7): 3D Mesh Rendering + Cube + Depth Buffer 📦
+**Тривалість:** ~45 хвилин
+**Фаза:** Phase 1 - Week 2 - 3D Objects
+
+#### Виконано:
+- ✅ **Створено mesh rendering систему** (`src/rendering/mesh.rs`):
+  - `MeshVertex` struct (position + normal + color)
+  - `generate_cube()` функція:
+    - 24 вершини (4 на грань для різних нормалей)
+    - 36 індексів (6 граней × 2 трикутники)
+    - CCW winding order
+    - Нормалі направлені назовні
+  - `Mesh` struct з vertex/index buffers та render pipeline
+  - Indexed drawing з depth stencil
+
+- ✅ **Створено mesh shader** (`assets/shaders/mesh.wgsl`):
+  - Vertex shader: transform position через view-projection
+  - Fragment shader з базовим diffuse освітленням:
+    - Directional light (0.5, 1.0, 0.3) - зверху-спереду-справа
+    - Ambient: 0.3 (щоб тіні не були повністю чорними)
+    - Diffuse: dot(N, L) Lambert lighting
+  - `lighting = ambient + diffuse`
+
+- ✅ **Додано Depth Buffer** (`src/rendering/renderer.rs`):
+  - `create_depth_texture()` функція
+  - Format: Depth32Float
+  - Оновлюється при resize
+  - Використовується в render pass
+
+- ✅ **Оновлено Grid pipeline**:
+  - Додано depth_stencil state (раніше було None)
+  - Тепер grid правильно взаємодіє з 3D об'єктами
+
+- ✅ **Інтегровано куб в renderer**:
+  - Червонуватий куб 1x1x1 в центрі сцени
+  - Колір: [0.8, 0.3, 0.3]
+  - Позиція: центр (0, 0, 0), нижня грань на Y=−0.5
+
+#### Технічні деталі:
+
+**Створені файли:**
+- `src/rendering/mesh.rs` - Mesh система (260+ рядків)
+- `assets/shaders/mesh.wgsl` - Mesh shader з освітленням (90+ рядків)
+
+**Змінені файли:**
+- `src/rendering/mod.rs` - експорт mesh компонентів
+- `src/rendering/renderer.rs` - depth buffer + cube integration
+- `src/rendering/grid.rs` - додано depth_stencil state
+
+**Структура коду після сесії:**
+```
+arena_combat/
+├── src/
+│   ├── main.rs
+│   ├── fps_counter.rs
+│   ├── input/
+│   │   ├── mod.rs
+│   │   └── input_state.rs
+│   ├── camera/
+│   │   ├── mod.rs
+│   │   └── camera.rs
+│   └── rendering/
+│       ├── mod.rs              # ✅ Оновлено (mesh exports)
+│       ├── renderer.rs         # ✅ Оновлено (depth + cube)
+│       ├── grid.rs             # ✅ Оновлено (depth_stencil)
+│       └── mesh.rs             # ✅ НОВИЙ
+├── assets/
+│   └── shaders/
+│       ├── grid.wgsl
+│       └── mesh.wgsl           # ✅ НОВИЙ
+└── PROGRESS.md                 # ✅ Оновлено
+```
+
+#### Cube Geometry:
+
+**Vertices (24 total, 4 per face):**
+```
+Front (Z+):  4 vertices, normal [0, 0, 1]
+Back (Z-):   4 vertices, normal [0, 0, -1]
+Top (Y+):    4 vertices, normal [0, 1, 0]
+Bottom (Y-): 4 vertices, normal [0, -1, 0]
+Right (X+):  4 vertices, normal [1, 0, 0]
+Left (X-):   4 vertices, normal [-1, 0, 0]
+```
+
+**Indices (36 total, 6 per face):**
+- 2 трикутники на грань
+- CCW winding для front face
+
+#### Lighting Model:
+
+```wgsl
+// Directional light
+let light_dir = normalize(vec3<f32>(0.5, 1.0, 0.3));
+
+// Ambient + Diffuse
+let ambient = 0.3;
+let diffuse = max(dot(normal, light_dir), 0.0);
+let lighting = min(ambient + diffuse, 1.0);
+
+// Final color
+final_color = input.color * lighting;
+```
+
+#### Проблема та рішення:
+
+**Проблема:** Grid pipeline не мав depth_stencil, але render pass використовував depth buffer
+```
+Render pipeline targets are incompatible with render pass
+Incompatible depth-stencil attachment format:
+  RenderPass uses Depth32Float, RenderPipeline uses None
+```
+
+**Рішення:** Додали depth_stencil state до Grid pipeline:
+```rust
+depth_stencil: Some(wgpu::DepthStencilState {
+    format: wgpu::TextureFormat::Depth32Float,
+    depth_write_enabled: true,
+    depth_compare: wgpu::CompareFunction::Less,
+    ...
+})
+```
+
+#### Що працює:
+
+- [x] Червоний куб рендериться на сцені
+- [x] Базове diffuse освітлення (видно грані)
+- [x] Depth buffer (правильний z-ordering)
+- [x] Grid залишається видимим
+- [x] Camera controls працюють з кубом
+- [x] Resize працює (depth texture оновлюється)
+- [x] FPS стабільний (~60)
+
+#### Візуальний результат:
+
+Тепер при запуску `cargo run` бачимо:
+- Темно-синій фон
+- Координатна сітка 20x20 на підлозі
+- **Червонуватий куб 1x1x1 в центрі** ✨
+- Куб освітлений зверху-спереду
+- Різні грані мають різну яскравість (lighting)
+- Можна обертати камеру і бачити куб з різних сторін
+
+#### Статус Phase 1, Week 2-3:
+
+**Завершено:**
+- ✅ Базове вікно + event loop (Сесія 3)
+- ✅ wgpu renderer + clear color (Сесія 4)
+- ✅ FPS counter (Сесія 4)
+- ✅ 3D camera з perspective projection (Сесія 5)
+- ✅ Grid visualization (Сесія 5)
+- ✅ Camera controls - orbit, zoom, pan (Сесія 6)
+- ✅ **3D Mesh rendering + Cube + Depth Buffer (Сесія 7)** ✨
+
+#### Наступні кроки (Сесія 8):
+
+**Option A - Transform System:**
+- [ ] Додати Model matrix (position, rotation, scale)
+- [ ] Model uniform buffer
+- [ ] Можливість переміщати/обертати об'єкти
+
+**Option B - Multiple Objects:**
+- [ ] Рендеринг декількох кубів
+- [ ] Різні позиції та кольори
+- [ ] Instance rendering (опційно)
+
+**Option C - Delta Time + Game Loop:**
+- [ ] Delta time tracking
+- [ ] Fixed timestep для physics
+- [ ] Розділення render/update
+
+**Рекомендація:** Option A (Transform System) - потрібна можливість позиціонувати об'єкти для подальшої роботи над гравцем та AI.
+
+---
+
 ## 💡 Ключові концепції проекту
 
 ### Філософія бою (з GDD):

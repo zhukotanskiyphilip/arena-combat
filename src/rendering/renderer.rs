@@ -67,6 +67,7 @@ use winit::window::Window;
 
 use crate::camera::{Camera, CameraUniform};
 use super::grid::Grid;
+use super::mesh::{Mesh, generate_cube};
 
 /// Основний renderer на базі wgpu
 ///
@@ -105,6 +106,16 @@ pub struct WgpuRenderer {
 
     /// Grid (координатна сітка)
     grid: Grid,
+
+    /// Depth texture для правильного z-ordering
+    depth_texture: wgpu::Texture,
+    depth_view: wgpu::TextureView,
+
+    /// Cube mesh (тестовий об'єкт)
+    cube: Mesh,
+
+    /// Camera bind group layout (зберігаємо для створення нових mesh)
+    camera_bind_group_layout: wgpu::BindGroupLayout,
 }
 
 impl WgpuRenderer {
@@ -241,6 +252,19 @@ impl WgpuRenderer {
         // 10. Створити Grid
         let grid = Grid::new(&device, &config, &camera_bind_group_layout, 20);
 
+        // 11. Створити Depth Texture
+        let (depth_texture, depth_view) = Self::create_depth_texture(&device, &config);
+
+        // 12. Створити Cube mesh
+        let (cube_vertices, cube_indices) = generate_cube(1.0, [0.8, 0.3, 0.3]); // Червонуватий куб 1x1x1
+        let cube = Mesh::new(
+            &device,
+            &config,
+            &cube_vertices,
+            &cube_indices,
+            &camera_bind_group_layout,
+        );
+
         log::info!("wgpu renderer готовий до роботи!");
         log::info!("Camera: position={:?}, target={:?}", camera.position, camera.target);
 
@@ -256,7 +280,38 @@ impl WgpuRenderer {
             camera_buffer,
             camera_bind_group,
             grid,
+            depth_texture,
+            depth_view,
+            cube,
+            camera_bind_group_layout,
         }
+    }
+
+    /// Створює depth texture для z-ordering
+    fn create_depth_texture(
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let size = wgpu::Extent3d {
+            width: config.width,
+            height: config.height,
+            depth_or_array_layers: 1,
+        };
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Depth Texture"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        (texture, view)
     }
 
     /// Оновлює розмір вікна
@@ -275,6 +330,11 @@ impl WgpuRenderer {
 
             // Оновлюємо aspect ratio камери
             self.camera.update_aspect(new_size.width, new_size.height);
+
+            // Пересоздаємо depth texture з новим розміром
+            let (depth_texture, depth_view) = Self::create_depth_texture(&self.device, &self.config);
+            self.depth_texture = depth_texture;
+            self.depth_view = depth_view;
         }
     }
 
@@ -314,7 +374,7 @@ impl WgpuRenderer {
                 label: Some("Render Encoder"),
             });
 
-        // 5. Створити render pass і малювати grid
+        // 5. Створити render pass з depth buffer
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
@@ -331,12 +391,22 @@ impl WgpuRenderer {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0), // Clear depth to 1.0 (far)
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
                 occlusion_query_set: None,
                 timestamp_writes: None,
             });
 
-            // Малюємо grid
+            // Малюємо 3D об'єкти (cube)
+            self.cube.render(&mut render_pass, &self.camera_bind_group);
+
+            // Малюємо grid (після mesh щоб правильно відображався поверх через alpha)
             self.grid.render(&mut render_pass, &self.camera_bind_group);
             // render_pass автоматично завершується при drop
         }
