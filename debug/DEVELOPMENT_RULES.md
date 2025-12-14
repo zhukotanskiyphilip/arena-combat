@@ -1,5 +1,14 @@
 # Development Rules
 
+## Git - ОБОВ'ЯЗКОВО!
+
+**Після кожної сесії роботи:**
+1. `git add -A`
+2. `git commit -m "опис змін"`
+3. `git push`
+
+**НЕ ЗАБУВАЙ КОМІТИТИ!** Результати роботи мають зберігатися в git!
+
 ## Rule 1: No Unauthorized Changes
 
 **NEVER add or remove functionality unless the user explicitly asks for it.**
