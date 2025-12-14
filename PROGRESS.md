@@ -1460,6 +1460,109 @@ position += forward * amount * move_speed * delta;
 
 ---
 
+### 2025-12-14 (Сесія 11): Third Person Camera 🎥
+**Тривалість:** ~30 хвилин
+**Фаза:** Phase 1 - Week 4 - Camera System
+
+#### Виконано:
+- ✅ **Third Person Camera система** (`src/camera/camera.rs`):
+  - Додано yaw/pitch/distance поля для spherical coordinates
+  - `update_third_person(target_pos, height)` - камера слідує за гравцем
+  - `rotate_third_person(delta_yaw, delta_pitch)` - mouse look
+  - `zoom_third_person(delta)` - zoom 2-20 units
+  - `forward_xz()` / `right_xz()` - camera directions для руху гравця
+  - Pitch clamping: -30° до +85° (не перевертається)
+
+- ✅ **Camera-relative movement** (`src/main.rs`):
+  - WASD рух тепер відносний до камери
+  - W = вперед куди дивиться камера
+  - Player автоматично повертається в напрямку руху
+  - Нормалізація діагонального руху
+
+- ✅ **Mouse look controls**:
+  - Права кнопка миші + drag = обертання камери
+  - Mouse wheel = zoom
+  - Sensitivity: 0.003 rad/pixel
+
+#### Технічні деталі:
+
+**Змінені файли:**
+- `src/camera/camera.rs` - third person camera methods (+90 рядків)
+- `src/main.rs` - camera-relative movement, mouse look
+
+**Camera Math:**
+```rust
+// Camera offset від target
+offset = Vec3::new(
+    distance * pitch.cos() * yaw.cos(),
+    distance * pitch.sin(),
+    distance * pitch.cos() * yaw.sin(),
+);
+camera.position = target + offset;
+
+// Forward direction (куди дивиться камера)
+forward_xz = Vec3::new(-yaw.cos(), 0.0, -yaw.sin());
+```
+
+#### Controls Summary:
+
+| Input | Action | Details |
+|-------|--------|---------|
+| W | Move Forward | Куди дивиться камера |
+| S | Move Backward | Протилежно камері |
+| A | Strafe Left | Відносно камери |
+| D | Strafe Right | Відносно камери |
+| Right Mouse + Drag | Rotate Camera | Обертання навколо гравця |
+| Mouse Wheel | Zoom | 2-20 units distance |
+| ESC | Exit | Закрити програму |
+
+#### Що працює:
+
+- [x] Third person camera слідує за гравцем
+- [x] Mouse look (права кнопка)
+- [x] Camera-relative WASD movement
+- [x] Player auto-rotate в напрямку руху
+- [x] Zoom (mouse wheel)
+- [x] Pitch clamping (камера не перевертається)
+- [x] FPS стабільний (~60)
+
+#### Статус Phase 1, Week 4:
+
+**Завершено:**
+- ✅ Базове вікно + event loop (Сесія 3)
+- ✅ wgpu renderer + clear color (Сесія 4)
+- ✅ FPS counter (Сесія 4)
+- ✅ 3D camera з perspective projection (Сесія 5)
+- ✅ Grid visualization (Сесія 5)
+- ✅ Camera controls - orbit, zoom, pan (Сесія 6)
+- ✅ 3D Mesh rendering + Cube + Depth Buffer (Сесія 7)
+- ✅ Transform System + Multiple Objects (Сесія 8)
+- ✅ Delta Time + Cube Animation (Сесія 9)
+- ✅ Player Character + Movement (Сесія 10)
+- ✅ **Third Person Camera (Сесія 11)** 🎥
+
+#### Наступні кроки (Сесія 12):
+
+**Option A - Combat System Basics:**
+- [ ] Attack input (mouse click → атака)
+- [ ] Attack direction (куди дивиться гравець)
+- [ ] Basic hitbox system
+- [ ] Attack cooldown
+
+**Option B - Collision Detection:**
+- [ ] Player-cube collision
+- [ ] Basic physics (не проходити крізь об'єкти)
+- [ ] Ground collision
+
+**Option C - Animation System:**
+- [ ] Keyframe animation структура
+- [ ] Walk/Idle animation blending
+- [ ] Attack animation
+
+**Рекомендація:** Option A (Combat System) - основна мета проекту.
+
+---
+
 ## 💡 Ключові концепції проекту
 
 ### Філософія бою (з GDD):

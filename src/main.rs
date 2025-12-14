@@ -69,12 +69,16 @@ mod input;
 mod transform;
 mod time;
 mod player;
+mod combat;
+mod enemy;
 
 use rendering::WgpuRenderer;
 use fps_counter::FpsCounter;
 use input::InputState;
 use time::GameTime;
 use player::Player;
+use combat::{Combat, HitboxManager};
+use enemy::{Enemy, spawn_enemies_circle};
 use std::sync::Arc;
 use winit::{
     application::ApplicationHandler,
@@ -96,6 +100,10 @@ struct App {
     input_state: InputState,
     game_time: GameTime,
     player: Player,
+    combat: Combat,
+    hitbox_manager: HitboxManager,
+    enemies: Vec<Enemy>,
+    enemies_spawned: bool,
 }
 
 impl ApplicationHandler for App {
@@ -129,9 +137,24 @@ impl ApplicationHandler for App {
                 self.input_state.update_mouse_position(position.x, position.y);
             }
 
-            // Mouse buttons (для drag rotation)
+            // Mouse buttons (для drag rotation та атаки)
             WindowEvent::MouseInput { button, state, .. } => {
                 self.input_state.update_mouse_button(button, state);
+
+                // Ліва кнопка миші = атака
+                if button == MouseButton::Left && state == ElementState::Pressed {
+                    // Напрямок атаки = куди дивиться гравець
+                    let attack_dir = self.player.forward();
+                    if self.combat.start_attack(attack_dir) {
+                        // Spawn hitbox на кінці зброї
+                        self.hitbox_manager.spawn_attack_hitbox(
+                            self.player.position,
+                            self.player.yaw,
+                            50.0, // damage
+                        );
+                        log::info!("Attack! Hitbox spawned");
+                    }
+                }
             }
 
             // Mouse wheel (для zoom)
@@ -186,10 +209,56 @@ impl ApplicationHandler for App {
                     }
                 }
 
+                // === ENEMY SPAWNING (one-time) ===
+                if !self.enemies_spawned {
+                    if let Some(renderer) = &mut self.renderer {
+                        renderer.spawn_enemies(&self.enemies);
+                        self.enemies_spawned = true;
+                    }
+                }
+
+                // === COMBAT UPDATE ===
+                self.combat.update(self.game_time.delta());
+
+                // === HITBOX UPDATE & COLLISION ===
+                {
+                    let delta = self.game_time.delta();
+                    self.hitbox_manager.update(delta);
+
+                    // Перевіряємо колізії hitbox ↔ enemies
+                    let enemy_radius = 0.5; // Приблизний радіус ворога
+                    for hitbox in &mut self.hitbox_manager.hitboxes {
+                        for (i, enemy) in self.enemies.iter_mut().enumerate() {
+                            // Пропускаємо мертвих та вже вражених
+                            if !enemy.is_alive() || hitbox.has_hit(i) {
+                                continue;
+                            }
+
+                            // Collision check (enemy position + height offset для центру)
+                            let enemy_center = enemy.position + glam::Vec3::new(0.0, 1.0, 0.0);
+                            if hitbox.collides_with_sphere(enemy_center, enemy_radius) {
+                                // HIT!
+                                enemy.take_damage(hitbox.damage);
+                                hitbox.mark_hit(i);
+                                log::info!("Enemy {} hit! Health: {}", i, enemy.health);
+
+                                if !enemy.is_alive() {
+                                    log::info!("Enemy {} killed!", i);
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // === ANIMATION UPDATE ===
                 if let Some(renderer) = &mut self.renderer {
                     // Обертаємо куби з використанням delta time
                     renderer.update_animations(self.game_time.delta());
+                }
+
+                // === ENEMY UPDATE ===
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.update_enemies(&self.enemies);
                 }
 
                 // === PLAYER UPDATE (Camera-relative movement) ===
@@ -225,15 +294,17 @@ impl ApplicationHandler for App {
 
                         // Рухаємо гравця
                         self.player.position += move_dir * self.player.move_speed * delta;
-
-                        // Повертаємо гравця в напрямку руху
-                        self.player.yaw = move_dir.x.atan2(-move_dir.z);
                     }
+
+                    // Гравець ЗАВЖДИ дивиться в напрямку камери
+                    // camera.yaw - це кут камери НАВКОЛО гравця
+                    // Гравець має дивитися В ПРОТИЛЕЖНОМУ напрямку (від камери до таргету)
+                    self.player.yaw = renderer.camera.yaw + std::f32::consts::PI;
                 }
 
                 // === PLAYER MESH UPDATE ===
                 if let Some(renderer) = &mut self.renderer {
-                    renderer.update_player(&self.player);
+                    renderer.update_player(&self.player, &self.combat);
                 }
 
                 // === CAMERA UPDATE (Third Person) ===
@@ -320,6 +391,14 @@ fn main() {
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
 
+    // Spawn enemies по колу навколо центру арени
+    let enemies = spawn_enemies_circle(
+        glam::Vec3::ZERO, // center
+        8.0,              // radius
+        6,                // count - 6 ворогів по колу
+    );
+    log::info!("Created {} enemies", enemies.len());
+
     // Створити app
     let mut app = App {
         window: None,
@@ -328,6 +407,10 @@ fn main() {
         input_state: InputState::new(),
         game_time: GameTime::new(),
         player: Player::new(glam::Vec3::new(0.0, 0.0, 5.0)), // Старт трохи попереду
+        combat: Combat::new(),
+        hitbox_manager: HitboxManager::new(),
+        enemies,
+        enemies_spawned: false,
     };
 
     // Запустити event loop

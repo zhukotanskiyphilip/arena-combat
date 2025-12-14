@@ -68,8 +68,10 @@ use winit::window::Window;
 use crate::camera::{Camera, CameraUniform};
 use crate::transform::Transform;
 use crate::player::Player;
+use crate::combat::Combat;
+use crate::enemy::Enemy;
 use super::grid::Grid;
-use super::mesh::{Mesh, generate_cube, generate_player_mannequin};
+use super::mesh::{Mesh, generate_cube, generate_player_mannequin, generate_player_body, generate_weapon_arm};
 use glam::{Vec3, Quat};
 
 /// Основний renderer на базі wgpu
@@ -117,8 +119,14 @@ pub struct WgpuRenderer {
     /// Cubes (тестові об'єкти)
     cubes: Vec<Mesh>,
 
-    /// Player mesh (манекен)
+    /// Player mesh (тіло без руки)
     player_mesh: Mesh,
+
+    /// Player weapon mesh (рука + меч) - окремий для анімації
+    weapon_mesh: Mesh,
+
+    /// Enemy meshes (вороги)
+    enemy_meshes: Vec<Mesh>,
 
     /// Camera bind group layout (зберігаємо для створення нових mesh)
     camera_bind_group_layout: wgpu::BindGroupLayout,
@@ -312,25 +320,38 @@ impl WgpuRenderer {
         );
         cubes.push(cube4);
 
-        // 13. Створити Player mesh (манекен)
-        let (player_vertices, player_indices) = generate_player_mannequin(
-            0.3,                      // body_radius
-            1.5,                      // body_height
-            0.25,                     // head_radius
+        // 13. Створити Player body mesh (без руки)
+        let (body_vertices, body_indices) = generate_player_body(
             [0.2, 0.6, 0.9],          // body_color (синій)
             [0.9, 0.8, 0.7],          // head_color (тілесний)
         );
-        // Зміщуємо центр манекена вниз щоб ноги стояли на підлозі
-        // body_height=1.5, отже центр тіла на 0, а низ на -0.75
-        // Потрібно підняти на 0.75 щоб низ був на 0
         let player_mesh = Mesh::new(
             &device,
             &config,
-            &player_vertices,
-            &player_indices,
+            &body_vertices,
+            &body_indices,
             &camera_bind_group_layout,
-            Transform::new(Vec3::new(0.0, 0.75, 0.0)), // Player at origin, lifted to stand on ground
+            Transform::new(Vec3::new(0.0, 0.75, 0.0)),
         );
+
+        // 14. Створити Weapon/Arm mesh (окремо для анімації)
+        let (weapon_vertices, weapon_indices) = generate_weapon_arm(
+            [0.2, 0.5, 0.8],          // arm_color
+            [0.7, 0.7, 0.75],         // weapon_color (світлий метал)
+        );
+        // Початкова позиція - на плечі (body_radius + offset, shoulder_height, 0)
+        let shoulder_offset = Vec3::new(0.3, 0.75 + 0.45, 0.0);  // body_radius=0.3, shoulder at 0.45 above center
+        let weapon_mesh = Mesh::new(
+            &device,
+            &config,
+            &weapon_vertices,
+            &weapon_indices,
+            &camera_bind_group_layout,
+            Transform::new(shoulder_offset),
+        );
+
+        // Enemy meshes (порожній вектор, заповниться через spawn_enemies)
+        let enemy_meshes = Vec::new();
 
         log::info!("wgpu renderer готовий до роботи!");
         log::info!("Camera: position={:?}, target={:?}", camera.position, camera.target);
@@ -353,6 +374,8 @@ impl WgpuRenderer {
             depth_view,
             cubes,
             player_mesh,
+            weapon_mesh,
+            enemy_meshes,
             camera_bind_group_layout,
         }
     }
@@ -478,8 +501,16 @@ impl WgpuRenderer {
                 cube.render(&mut render_pass, &self.camera_bind_group);
             }
 
-            // Малюємо player
+            // Малюємо player body
             self.player_mesh.render(&mut render_pass, &self.camera_bind_group);
+
+            // Малюємо player weapon/arm
+            self.weapon_mesh.render(&mut render_pass, &self.camera_bind_group);
+
+            // Малюємо enemies
+            for enemy_mesh in &self.enemy_meshes {
+                enemy_mesh.render(&mut render_pass, &self.camera_bind_group);
+            }
 
             // Малюємо grid (після mesh щоб правильно відображався поверх через alpha)
             self.grid.render(&mut render_pass, &self.camera_bind_group);
@@ -500,19 +531,44 @@ impl WgpuRenderer {
         self.size
     }
 
-    /// Оновлює позицію player mesh на основі Player struct
+    /// Оновлює позицію player mesh на основі Player та Combat state
     ///
     /// # Аргументи
     /// * `player` - Player struct з поточною позицією та yaw
-    pub fn update_player(&mut self, player: &Player) {
+    /// * `combat` - Combat struct зі станом атаки
+    pub fn update_player(&mut self, player: &Player, combat: &Combat) {
+        // === PLAYER BODY ===
         // Оновлюємо позицію mesh (з offset для центрування тіла)
         self.player_mesh.transform.position = player.position + Vec3::new(0.0, 0.75, 0.0);
 
         // Оновлюємо обертання mesh (yaw)
         self.player_mesh.transform.rotation = Quat::from_rotation_y(player.yaw);
+        self.player_mesh.transform.scale = Vec3::ONE;
 
         // Оновлюємо GPU buffer
         self.player_mesh.update_transform(&self.queue);
+
+        // === WEAPON/ARM ===
+        // Позиція плеча в world space
+        let body_radius = 0.3_f32;
+        let shoulder_height = 0.45_f32;  // Відносно центру тіла
+
+        // Shoulder position (праворуч від гравця)
+        let right_dir = Vec3::new(player.yaw.cos(), 0.0, -player.yaw.sin());
+        let shoulder_world = player.position
+            + Vec3::new(0.0, 0.75 + shoulder_height, 0.0)
+            + right_dir * body_radius;
+
+        self.weapon_mesh.transform.position = shoulder_world;
+
+        // Rotation: base yaw + swing angle
+        // Swing відбувається навколо локальної Y осі руки (горизонтальний замах)
+        let base_rotation = Quat::from_rotation_y(player.yaw);
+        let swing_rotation = Quat::from_rotation_y(combat.weapon_swing_angle);
+        self.weapon_mesh.transform.rotation = base_rotation * swing_rotation;
+
+        // Оновлюємо GPU buffer
+        self.weapon_mesh.update_transform(&self.queue);
     }
 
     /// Оновлює анімації об'єктів
@@ -539,6 +595,70 @@ impl WgpuRenderer {
 
                 // Оновлюємо GPU buffer
                 cube.update_transform(&self.queue);
+            }
+        }
+    }
+
+    /// Створює meshes для ворогів
+    ///
+    /// # Аргументи
+    /// * `enemies` - Список ворогів для spawning
+    pub fn spawn_enemies(&mut self, enemies: &[Enemy]) {
+        self.enemy_meshes.clear();
+
+        // Enemy колір - червоний (тіло) з темно-червоною головою
+        let enemy_body_color = [0.8, 0.2, 0.2];  // Червоний
+        let enemy_head_color = [0.6, 0.1, 0.1];  // Темно-червоний
+
+        let (enemy_vertices, enemy_indices) = generate_player_mannequin(
+            0.3,              // body_radius
+            1.2,              // body_height
+            0.25,             // head_radius
+            enemy_body_color,
+            enemy_head_color,
+        );
+
+        for enemy in enemies {
+            let mut transform = Transform::new(enemy.position + Vec3::new(0.0, 0.75, 0.0));
+            transform.rotation = Quat::from_rotation_y(enemy.yaw);
+
+            let mesh = Mesh::new(
+                &self.device,
+                &self.config,
+                &enemy_vertices,
+                &enemy_indices,
+                &self.camera_bind_group_layout,
+                transform,
+            );
+
+            self.enemy_meshes.push(mesh);
+        }
+
+        log::info!("Spawned {} enemy meshes", self.enemy_meshes.len());
+    }
+
+    /// Оновлює позиції enemy meshes
+    ///
+    /// # Аргументи
+    /// * `enemies` - Список ворогів з оновленими позиціями
+    pub fn update_enemies(&mut self, enemies: &[Enemy]) {
+        for (i, enemy) in enemies.iter().enumerate() {
+            if i < self.enemy_meshes.len() {
+                // Оновлюємо позицію
+                self.enemy_meshes[i].transform.position = enemy.position + Vec3::new(0.0, 0.75, 0.0);
+
+                // Оновлюємо rotation
+                self.enemy_meshes[i].transform.rotation = Quat::from_rotation_y(enemy.yaw);
+
+                // Якщо ворог мертвий - зменшуємо scale (або можна приховати)
+                if !enemy.is_alive() {
+                    self.enemy_meshes[i].transform.scale = Vec3::new(1.0, 0.1, 1.0); // Сплющений
+                } else {
+                    self.enemy_meshes[i].transform.scale = Vec3::ONE;
+                }
+
+                // Оновлюємо GPU buffer
+                self.enemy_meshes[i].update_transform(&self.queue);
             }
         }
     }

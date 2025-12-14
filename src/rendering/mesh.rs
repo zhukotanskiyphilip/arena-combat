@@ -294,6 +294,197 @@ pub fn generate_player_mannequin(
     (vertices, indices)
 }
 
+/// Генерує тіло гравця (без руки зі зброєю)
+///
+/// Складається з:
+/// - Тіло (циліндр)
+/// - Голова (сфера)
+/// - Груди (випуклість спереду для орієнтації)
+/// - Обличчя (плоска частина голови спереду)
+///
+/// Forward direction = -Z (коли yaw=0)
+/// Рука з мечем генерується окремо для анімації
+pub fn generate_player_body(
+    body_color: [f32; 3],
+    head_color: [f32; 3],
+) -> (Vec<MeshVertex>, Vec<u16>) {
+    let segments = 12;
+
+    // Body parameters
+    let body_radius = 0.3;
+    let body_height = 1.2;
+    let head_radius = 0.25;
+
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+
+    // === BODY ===
+    let (body_verts, body_idx) = generate_cylinder(body_radius, body_height, segments, body_color);
+    vertices.extend(body_verts);
+    indices.extend(body_idx);
+
+    // === CHEST (випуклість спереду, -Z напрямок) ===
+    // Додаємо маленьку сферу-груди на передній частині тіла
+    let chest_color = [body_color[0] * 1.1, body_color[1] * 1.1, body_color[2] * 1.1]; // Трохи світліше
+    let (chest_verts, chest_idx) = generate_sphere(0.15, 8, 4, chest_color);
+    let chest_y = 0.2; // Вище центру тіла
+    let chest_z = -(body_radius + 0.08); // Спереду (forward = -Z)
+    let vertex_offset = vertices.len() as u16;
+    for mut v in chest_verts {
+        v.position[1] += chest_y;
+        v.position[2] += chest_z;
+        vertices.push(v);
+    }
+    for idx in chest_idx {
+        indices.push(idx + vertex_offset);
+    }
+
+    // === HEAD ===
+    let (head_verts, head_idx) = generate_sphere(head_radius, segments, segments / 2, head_color);
+    let head_y_offset = body_height / 2.0 + head_radius * 0.8;
+    let vertex_offset = vertices.len() as u16;
+    for mut v in head_verts {
+        v.position[1] += head_y_offset;
+        vertices.push(v);
+    }
+    for idx in head_idx {
+        indices.push(idx + vertex_offset);
+    }
+
+    // === FACE (ніс/обличчя спереду голови) ===
+    // Маленька піраміда/конус як ніс
+    let face_color = [0.9, 0.75, 0.6]; // Тілесний колір
+    let nose_size = 0.08;
+    let nose_z = -(head_radius + nose_size * 0.5);
+    let nose_y = head_y_offset;
+
+    // Простий "ніс" - маленький box
+    let (nose_verts, nose_idx) = generate_box(nose_size, nose_size * 0.8, nose_size, face_color);
+    let vertex_offset = vertices.len() as u16;
+    for mut v in nose_verts {
+        v.position[1] += nose_y;
+        v.position[2] += nose_z;
+        vertices.push(v);
+    }
+    for idx in nose_idx {
+        indices.push(idx + vertex_offset);
+    }
+
+    (vertices, indices)
+}
+
+/// Генерує руку з мечем (для анімації)
+///
+/// Pivot point (центр обертання) - на плечі (0, 0, 0).
+/// Рука йде вправо (+X), меч направлений вперед (-Z)
+pub fn generate_weapon_arm(
+    arm_color: [f32; 3],
+    weapon_color: [f32; 3],
+) -> (Vec<MeshVertex>, Vec<u16>) {
+    // Arm parameters
+    let arm_radius = 0.08;
+    let arm_length = 0.6;
+
+    // Weapon parameters
+    let weapon_width = 0.08;
+    let weapon_length = 1.0;
+
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+
+    // === ARM ===
+    // Pivot at (0, 0, 0), arm extends in +X direction
+    let (arm_verts, arm_idx) = generate_cylinder(arm_radius, arm_length, 8, arm_color);
+    for mut v in arm_verts {
+        // Повертаємо циліндр: Y-axis → X-axis
+        let old_y = v.position[1];
+        v.position[1] = v.position[0];
+        v.position[0] = old_y + arm_length / 2.0;  // Зсув щоб початок був на pivot
+
+        let old_ny = v.normal[1];
+        v.normal[1] = v.normal[0];
+        v.normal[0] = old_ny;
+
+        vertices.push(v);
+    }
+    indices.extend(arm_idx);
+
+    // === WEAPON (sword) ===
+    // Attached at end of arm, pointing forward (-Z)
+    let weapon_x = arm_length;           // Кінець руки
+    let weapon_z = -weapon_length / 2.0; // Центр меча попереду
+
+    let (weapon_verts, weapon_idx) = generate_box(weapon_width, weapon_width, weapon_length, weapon_color);
+    let vertex_offset = vertices.len() as u16;
+    for mut v in weapon_verts {
+        v.position[0] += weapon_x;
+        v.position[2] += weapon_z;
+        vertices.push(v);
+    }
+    for idx in weapon_idx {
+        indices.push(idx + vertex_offset);
+    }
+
+    (vertices, indices)
+}
+
+/// Генерує box (паралелепіпед) з центром в (0, 0, 0)
+///
+/// # Аргументи
+/// * `width` - розмір по X
+/// * `height` - розмір по Y
+/// * `depth` - розмір по Z
+/// * `color` - колір
+pub fn generate_box(width: f32, height: f32, depth: f32, color: [f32; 3]) -> (Vec<MeshVertex>, Vec<u16>) {
+    let hx = width / 2.0;
+    let hy = height / 2.0;
+    let hz = depth / 2.0;
+
+    let vertices = vec![
+        // Front face (Z+)
+        MeshVertex { position: [-hx, -hy,  hz], normal: [0.0, 0.0, 1.0], color },
+        MeshVertex { position: [ hx, -hy,  hz], normal: [0.0, 0.0, 1.0], color },
+        MeshVertex { position: [ hx,  hy,  hz], normal: [0.0, 0.0, 1.0], color },
+        MeshVertex { position: [-hx,  hy,  hz], normal: [0.0, 0.0, 1.0], color },
+        // Back face (Z-)
+        MeshVertex { position: [ hx, -hy, -hz], normal: [0.0, 0.0, -1.0], color },
+        MeshVertex { position: [-hx, -hy, -hz], normal: [0.0, 0.0, -1.0], color },
+        MeshVertex { position: [-hx,  hy, -hz], normal: [0.0, 0.0, -1.0], color },
+        MeshVertex { position: [ hx,  hy, -hz], normal: [0.0, 0.0, -1.0], color },
+        // Top face (Y+)
+        MeshVertex { position: [-hx,  hy,  hz], normal: [0.0, 1.0, 0.0], color },
+        MeshVertex { position: [ hx,  hy,  hz], normal: [0.0, 1.0, 0.0], color },
+        MeshVertex { position: [ hx,  hy, -hz], normal: [0.0, 1.0, 0.0], color },
+        MeshVertex { position: [-hx,  hy, -hz], normal: [0.0, 1.0, 0.0], color },
+        // Bottom face (Y-)
+        MeshVertex { position: [-hx, -hy, -hz], normal: [0.0, -1.0, 0.0], color },
+        MeshVertex { position: [ hx, -hy, -hz], normal: [0.0, -1.0, 0.0], color },
+        MeshVertex { position: [ hx, -hy,  hz], normal: [0.0, -1.0, 0.0], color },
+        MeshVertex { position: [-hx, -hy,  hz], normal: [0.0, -1.0, 0.0], color },
+        // Right face (X+)
+        MeshVertex { position: [ hx, -hy,  hz], normal: [1.0, 0.0, 0.0], color },
+        MeshVertex { position: [ hx, -hy, -hz], normal: [1.0, 0.0, 0.0], color },
+        MeshVertex { position: [ hx,  hy, -hz], normal: [1.0, 0.0, 0.0], color },
+        MeshVertex { position: [ hx,  hy,  hz], normal: [1.0, 0.0, 0.0], color },
+        // Left face (X-)
+        MeshVertex { position: [-hx, -hy, -hz], normal: [-1.0, 0.0, 0.0], color },
+        MeshVertex { position: [-hx, -hy,  hz], normal: [-1.0, 0.0, 0.0], color },
+        MeshVertex { position: [-hx,  hy,  hz], normal: [-1.0, 0.0, 0.0], color },
+        MeshVertex { position: [-hx,  hy, -hz], normal: [-1.0, 0.0, 0.0], color },
+    ];
+
+    let indices: Vec<u16> = vec![
+        0, 1, 2,  2, 3, 0,     // Front
+        4, 5, 6,  6, 7, 4,     // Back
+        8, 9, 10,  10, 11, 8,  // Top
+        12, 13, 14,  14, 15, 12, // Bottom
+        16, 17, 18,  18, 19, 16, // Right
+        20, 21, 22,  22, 23, 20, // Left
+    ];
+
+    (vertices, indices)
+}
+
 /// Генерує куб з центром в (0, 0, 0)
 ///
 /// # Аргументи
