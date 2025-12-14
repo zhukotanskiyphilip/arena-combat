@@ -57,11 +57,17 @@
 
 🕐 ІСТОРІЯ:
    2025-12-11: Створено базову структуру - вікно + event loop
-   [Наступні зміни тут]
+   2025-12-14: Додано wgpu renderer з очищенням екрану темно-синім кольором
 
 ═══════════════════════════════════════════════════════════════════════════════
 */
 
+mod rendering;
+mod fps_counter;
+
+use rendering::WgpuRenderer;
+use fps_counter::FpsCounter;
+use std::sync::Arc;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -75,7 +81,9 @@ use winit::{
 
 /// Головна структура додатку
 struct App {
-    window: Option<Window>,
+    window: Option<Arc<Window>>,
+    renderer: Option<WgpuRenderer>,
+    fps_counter: FpsCounter,
 }
 
 impl ApplicationHandler for App {
@@ -85,10 +93,16 @@ impl ApplicationHandler for App {
             .with_title("Arena Combat Prototype")
             .with_inner_size(winit::dpi::LogicalSize::new(800, 600));
 
-        let window = event_loop.create_window(window_attributes).unwrap();
-        self.window = Some(window);
+        let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
         log::info!("Вікно створено: 800x600");
+
+        // Ініціалізуємо wgpu renderer
+        log::info!("Ініціалізація renderer...");
+        let renderer = pollster::block_on(WgpuRenderer::new(window.clone()));
+
+        self.window = Some(window);
+        self.renderer = Some(renderer);
     }
 
     fn window_event(
@@ -119,9 +133,53 @@ impl ApplicationHandler for App {
 
             // Redraw request
             WindowEvent::RedrawRequested => {
-                // TODO: Тут буде rendering
-                if let Some(window) = &self.window {
-                    window.request_redraw();
+                // Оновити FPS counter
+                self.fps_counter.tick();
+
+                // Оновити заголовок вікна з FPS (кожні 30 кадрів для зменшення overhead)
+                static mut FRAME_COUNT: u32 = 0;
+                unsafe {
+                    FRAME_COUNT += 1;
+                    if FRAME_COUNT % 30 == 0 {
+                        if let Some(window) = &self.window {
+                            let fps = self.fps_counter.fps();
+                            let title = format!(
+                                "Arena Combat Prototype - {:.1} FPS ({:.2}ms)",
+                                fps,
+                                self.fps_counter.frame_time_ms()
+                            );
+                            window.set_title(&title);
+                        }
+                    }
+                }
+
+                // Рендеринг
+                if let Some(renderer) = &mut self.renderer {
+                    match renderer.render() {
+                        Ok(_) => {}
+                        Err(wgpu::SurfaceError::Lost) => {
+                            // Surface втрачено - треба пересоздать
+                            log::warn!("Surface lost, recreating...");
+                            if let Some(window) = &self.window {
+                                let size = window.inner_size();
+                                renderer.resize(size);
+                            }
+                        }
+                        Err(wgpu::SurfaceError::OutOfMemory) => {
+                            log::error!("Out of memory!");
+                            event_loop.exit();
+                        }
+                        Err(e) => {
+                            log::error!("Render error: {:?}", e);
+                        }
+                    }
+                }
+            }
+
+            // Resize вікна
+            WindowEvent::Resized(physical_size) => {
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.resize(physical_size);
                 }
             }
 
@@ -147,14 +205,18 @@ fn main() {
 
     log::info!("=== Arena Combat Prototype ===");
     log::info!("Версія: 0.1.0");
-    log::info!("Phase 1: Basic Window");
+    log::info!("Phase 1: Week 1-2 - Basic Rendering");
 
     // Створити event loop
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
 
     // Створити app
-    let mut app = App { window: None };
+    let mut app = App {
+        window: None,
+        renderer: None,
+        fps_counter: FpsCounter::new(),
+    };
 
     // Запустити event loop
     log::info!("Запуск event loop...");

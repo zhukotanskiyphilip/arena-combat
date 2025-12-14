@@ -1,0 +1,270 @@
+/*
+═══════════════════════════════════════════════════════════════════════════════
+ ФАЙЛ: src/rendering/renderer.rs
+═══════════════════════════════════════════════════════════════════════════════
+
+📋 ПРИЗНАЧЕННЯ:
+   WgpuRenderer - основний клас для рендерінгу через wgpu.
+
+   На даному етапі (Phase 1, Week 1-2): Просто очищує екран кольором.
+   Майбутнє: 3D рендерінг, камера, моделі, освітлення.
+
+🎯 ВІДПОВІДАЛЬНІСТЬ:
+   - Ініціалізація wgpu (instance, adapter, device, queue, surface)
+   - Налаштування surface configuration
+   - Рендеринг кадру (зараз - clear color, потім - 3D сцена)
+   - Обробка resize вікна
+
+🔗 ЗВ'ЯЗКИ З ІНШИМИ ФАЙЛАМИ:
+   Імпортує:
+   - wgpu - graphics API
+   - winit::window::Window - для створення surface
+
+   Експортує для:
+   - main.rs - створення і використання renderer
+
+📦 ЗАЛЕЖНОСТІ:
+   - wgpu = "22.1" - graphics API (Vulkan/DX12/Metal backend)
+   - pollster = "0.4" - для async/await в sync контексті
+
+⚠️  ВАЖЛИВІ ОБМЕЖЕННЯ:
+   1. Renderer ПОВИНЕН бути створений ПІСЛЯ вікна (surface залежить від window)
+   2. При resize вікна треба оновити surface configuration
+   3. wgpu працює асинхронно - використовуємо pollster::block_on
+
+🧪 ТЕСТУВАННЯ:
+   Запуск:
+   ```bash
+   cargo run
+   ```
+
+   Очікуваний результат:
+   - Вікно 800x600 з темно-синім кольором (RGB: 0.1, 0.2, 0.3)
+
+📝 ПРИКЛАД ВИКОРИСТАННЯ:
+   ```rust
+   // В main.rs
+   let renderer = pollster::block_on(WgpuRenderer::new(&window));
+
+   // В event loop
+   match event {
+       WindowEvent::RedrawRequested => {
+           renderer.render().unwrap();
+       }
+   }
+   ```
+
+🕐 ІСТОРІЯ:
+   2025-12-14: Створено - базова ініціалізація wgpu + clear color
+
+═══════════════════════════════════════════════════════════════════════════════
+*/
+
+use std::sync::Arc;
+use wgpu;
+use winit::window::Window;
+
+/// Основний renderer на базі wgpu
+///
+/// Структура містить всі необхідні wgpu об'єкти для рендерінгу.
+pub struct WgpuRenderer {
+    /// wgpu surface - зв'язок з вікном ОС
+    surface: wgpu::Surface<'static>,
+
+    /// Збережене вікно (Arc для 'static lifetime)
+    #[allow(dead_code)]
+    window: Arc<Window>,
+
+    /// wgpu device - логічний GPU пристрій
+    device: wgpu::Device,
+
+    /// wgpu queue - черга команд для GPU
+    queue: wgpu::Queue,
+
+    /// Конфігурація surface (формат, розмір, режим презентації)
+    config: wgpu::SurfaceConfiguration,
+
+    /// Розмір вікна
+    size: winit::dpi::PhysicalSize<u32>,
+}
+
+impl WgpuRenderer {
+    /// Створює новий WgpuRenderer
+    ///
+    /// # Аргументи
+    /// * `window` - Winit window (Arc) для створення surface
+    ///
+    /// # Повертає
+    /// Новий екземпляр WgpuRenderer, готовий до рендерінгу
+    ///
+    /// # Приклад
+    /// ```
+    /// let window = Arc::new(window);
+    /// let renderer = pollster::block_on(WgpuRenderer::new(window));
+    /// ```
+    pub async fn new(window: Arc<Window>) -> Self {
+        let size = window.inner_size();
+
+        log::info!("Ініціалізація wgpu renderer...");
+        log::debug!("Розмір вікна: {}x{}", size.width, size.height);
+
+        // 1. Створити wgpu Instance (точка входу в wgpu)
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(), // Автовибір: Vulkan/DX12/Metal
+            ..Default::default()
+        });
+        log::debug!("wgpu Instance створено");
+
+        // 2. Створити Surface (зв'язок з вікном)
+        let surface = instance.create_surface(window.clone()).unwrap();
+        log::debug!("wgpu Surface створено");
+
+        // 3. Запитати Adapter (фізичний GPU)
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            })
+            .await
+            .unwrap();
+
+        let adapter_info = adapter.get_info();
+        log::info!(
+            "Використовується GPU: {} ({:?})",
+            adapter_info.name,
+            adapter_info.backend
+        );
+
+        // 4. Запитати Device і Queue
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: Some("Main Device"),
+                    required_features: wgpu::Features::empty(),
+                    required_limits: wgpu::Limits::default(),
+                    memory_hints: Default::default(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        log::debug!("wgpu Device і Queue створені");
+
+        // 5. Налаштувати Surface
+        let surface_caps = surface.get_capabilities(&adapter);
+        let surface_format = surface_caps
+            .formats
+            .iter()
+            .copied()
+            .find(|f| f.is_srgb())
+            .unwrap_or(surface_caps.formats[0]);
+
+        log::debug!("Surface format: {:?}", surface_format);
+
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: surface_format,
+            width: size.width,
+            height: size.height,
+            present_mode: wgpu::PresentMode::Fifo, // VSync
+            alpha_mode: surface_caps.alpha_modes[0],
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        };
+
+        surface.configure(&device, &config);
+        log::info!("wgpu renderer готовий до роботи!");
+
+        Self {
+            surface,
+            window,
+            device,
+            queue,
+            config,
+            size,
+        }
+    }
+
+    /// Оновлює розмір вікна
+    ///
+    /// Викликається при WindowEvent::Resized
+    ///
+    /// # Аргументи
+    /// * `new_size` - Новий розмір вікна
+    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+        if new_size.width > 0 && new_size.height > 0 {
+            log::debug!("Resize: {}x{}", new_size.width, new_size.height);
+            self.size = new_size;
+            self.config.width = new_size.width;
+            self.config.height = new_size.height;
+            self.surface.configure(&self.device, &self.config);
+        }
+    }
+
+    /// Рендерить один кадр
+    ///
+    /// На даному етапі: просто очищує екран кольором.
+    /// Майбутнє: рендерінг 3D сцени.
+    ///
+    /// # Повертає
+    /// `Ok(())` якщо рендерінг успішний
+    /// `Err(wgpu::SurfaceError)` при помилці
+    ///
+    /// # Помилки
+    /// - `SurfaceError::Lost` - surface втрачено, треба пересоздать
+    /// - `SurfaceError::OutOfMemory` - не вистачає пам'яті
+    pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+        // 1. Отримати поточний frame з surface
+        let output = self.surface.get_current_texture()?;
+
+        // 2. Створити view для текстури
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        // 3. Створити command encoder
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Render Encoder"),
+            });
+
+        // 4. Створити render pass з clear color
+        {
+            let _render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.1, // Темно-синій колір для арени
+                            g: 0.2,
+                            b: 0.3,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+            });
+            // render_pass автоматично завершується при drop
+        }
+
+        // 5. Відправити команди в queue
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        // 6. Презентувати frame
+        output.present();
+
+        Ok(())
+    }
+
+    /// Повертає поточний розмір вікна
+    pub fn size(&self) -> winit::dpi::PhysicalSize<u32> {
+        self.size
+    }
+}
