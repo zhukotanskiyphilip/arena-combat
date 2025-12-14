@@ -11,11 +11,13 @@
    - Генерація простих примітивів (cube, sphere, plane)
    - Mesh struct з vertex/index buffers
    - Render pipeline для 3D об'єктів
+   - Transform support (Model matrix)
 
 🔗 ЗВ'ЯЗКИ З ІНШИМИ ФАЙЛАМИ:
    Імпортує:
    - wgpu - GPU rendering
    - bytemuck - GPU data conversion
+   - transform - Transform, TransformUniform
 
    Експортує для:
    - renderer.rs - інтеграція в render loop
@@ -25,14 +27,17 @@
    - Normals: outward facing for lighting
    - Winding order: counter-clockwise (CCW) for front faces
    - Index format: u16 (max 65535 vertices per mesh)
+   - Transform: Model matrix в group(1) binding(0)
 
 🕐 ІСТОРІЯ:
    2025-12-14: Створено - базовий mesh rendering з cube primitive
+   2025-12-14: Додано Transform support (Model matrix)
 
 ═══════════════════════════════════════════════════════════════════════════════
 */
 
 use wgpu::util::DeviceExt;
+use crate::transform::{Transform, TransformUniform};
 
 /// Vertex структура для 3D mesh
 ///
@@ -159,6 +164,14 @@ pub struct Mesh {
     index_buffer: wgpu::Buffer,
     num_indices: u32,
     render_pipeline: wgpu::RenderPipeline,
+
+    /// Transform для позиціонування mesh
+    pub transform: Transform,
+
+    /// Transform uniform buffer
+    transform_uniform: TransformUniform,
+    transform_buffer: wgpu::Buffer,
+    transform_bind_group: wgpu::BindGroup,
 }
 
 impl Mesh {
@@ -170,12 +183,14 @@ impl Mesh {
     /// * `vertices` - Вершини mesh
     /// * `indices` - Індекси для indexed drawing
     /// * `camera_bind_group_layout` - Layout для camera uniform
+    /// * `transform` - Початковий transform для mesh
     pub fn new(
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
         vertices: &[MeshVertex],
         indices: &[u16],
         camera_bind_group_layout: &wgpu::BindGroupLayout,
+        transform: Transform,
     ) -> Self {
         // Vertex buffer
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -191,16 +206,52 @@ impl Mesh {
             usage: wgpu::BufferUsages::INDEX,
         });
 
+        // Transform uniform
+        let mut transform_uniform = TransformUniform::new();
+        transform_uniform.update(&transform);
+
+        let transform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Mesh Transform Buffer"),
+            contents: bytemuck::cast_slice(&[transform_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        // Transform bind group layout
+        let transform_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+                label: Some("transform_bind_group_layout"),
+            });
+
+        // Transform bind group
+        let transform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &transform_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: transform_buffer.as_entire_binding(),
+            }],
+            label: Some("transform_bind_group"),
+        });
+
         // Shader
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Mesh Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../../assets/shaders/mesh.wgsl").into()),
         });
 
-        // Pipeline layout
+        // Pipeline layout (camera @ group(0), transform @ group(1))
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Mesh Pipeline Layout"),
-            bind_group_layouts: &[camera_bind_group_layout],
+            bind_group_layouts: &[camera_bind_group_layout, &transform_bind_group_layout],
             push_constant_ranges: &[],
         });
 
@@ -254,7 +305,23 @@ impl Mesh {
             index_buffer,
             num_indices: indices.len() as u32,
             render_pipeline,
+            transform,
+            transform_uniform,
+            transform_buffer,
+            transform_bind_group,
         }
+    }
+
+    /// Оновлює transform buffer на GPU
+    ///
+    /// Викликайте після зміни self.transform
+    pub fn update_transform(&mut self, queue: &wgpu::Queue) {
+        self.transform_uniform.update(&self.transform);
+        queue.write_buffer(
+            &self.transform_buffer,
+            0,
+            bytemuck::cast_slice(&[self.transform_uniform]),
+        );
     }
 
     /// Рендерить mesh
@@ -265,6 +332,7 @@ impl Mesh {
     pub fn render<'a>(&'a self, render_pass: &mut wgpu::RenderPass<'a>, camera_bind_group: &'a wgpu::BindGroup) {
         render_pass.set_pipeline(&self.render_pipeline);
         render_pass.set_bind_group(0, camera_bind_group, &[]);
+        render_pass.set_bind_group(1, &self.transform_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
         render_pass.draw_indexed(0..self.num_indices, 0, 0..1);

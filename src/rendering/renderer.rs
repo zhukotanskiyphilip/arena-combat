@@ -66,8 +66,10 @@ use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 use crate::camera::{Camera, CameraUniform};
+use crate::transform::Transform;
 use super::grid::Grid;
 use super::mesh::{Mesh, generate_cube};
+use glam::Vec3;
 
 /// Основний renderer на базі wgpu
 ///
@@ -111,8 +113,8 @@ pub struct WgpuRenderer {
     depth_texture: wgpu::Texture,
     depth_view: wgpu::TextureView,
 
-    /// Cube mesh (тестовий об'єкт)
-    cube: Mesh,
+    /// Cubes (тестові об'єкти)
+    cubes: Vec<Mesh>,
 
     /// Camera bind group layout (зберігаємо для створення нових mesh)
     camera_bind_group_layout: wgpu::BindGroupLayout,
@@ -255,18 +257,60 @@ impl WgpuRenderer {
         // 11. Створити Depth Texture
         let (depth_texture, depth_view) = Self::create_depth_texture(&device, &config);
 
-        // 12. Створити Cube mesh
-        let (cube_vertices, cube_indices) = generate_cube(1.0, [0.8, 0.3, 0.3]); // Червонуватий куб 1x1x1
-        let cube = Mesh::new(
+        // 12. Створити кілька Cube meshes з різними позиціями
+        let mut cubes = Vec::new();
+
+        // Центральний червоний куб (трохи підняти над grid)
+        let (cube_vertices, cube_indices) = generate_cube(1.0, [0.8, 0.3, 0.3]);
+        let cube1 = Mesh::new(
             &device,
             &config,
             &cube_vertices,
             &cube_indices,
             &camera_bind_group_layout,
+            Transform::new(Vec3::new(0.0, 0.5, 0.0)), // Center, lifted by 0.5 (half of cube height)
         );
+        cubes.push(cube1);
+
+        // Зелений куб зліва
+        let (cube_vertices, cube_indices) = generate_cube(1.0, [0.3, 0.8, 0.3]);
+        let cube2 = Mesh::new(
+            &device,
+            &config,
+            &cube_vertices,
+            &cube_indices,
+            &camera_bind_group_layout,
+            Transform::new(Vec3::new(-3.0, 0.5, 0.0)),
+        );
+        cubes.push(cube2);
+
+        // Синій куб справа
+        let (cube_vertices, cube_indices) = generate_cube(1.0, [0.3, 0.3, 0.8]);
+        let cube3 = Mesh::new(
+            &device,
+            &config,
+            &cube_vertices,
+            &cube_indices,
+            &camera_bind_group_layout,
+            Transform::new(Vec3::new(3.0, 0.5, 0.0)),
+        );
+        cubes.push(cube3);
+
+        // Жовтий куб позаду
+        let (cube_vertices, cube_indices) = generate_cube(1.5, [0.9, 0.8, 0.2]); // Bigger cube
+        let cube4 = Mesh::new(
+            &device,
+            &config,
+            &cube_vertices,
+            &cube_indices,
+            &camera_bind_group_layout,
+            Transform::new(Vec3::new(0.0, 0.75, -4.0)),
+        );
+        cubes.push(cube4);
 
         log::info!("wgpu renderer готовий до роботи!");
         log::info!("Camera: position={:?}, target={:?}", camera.position, camera.target);
+        log::info!("Створено {} кубів з різними позиціями", cubes.len());
 
         Self {
             surface,
@@ -282,7 +326,7 @@ impl WgpuRenderer {
             grid,
             depth_texture,
             depth_view,
-            cube,
+            cubes,
             camera_bind_group_layout,
         }
     }
@@ -403,8 +447,10 @@ impl WgpuRenderer {
                 timestamp_writes: None,
             });
 
-            // Малюємо 3D об'єкти (cube)
-            self.cube.render(&mut render_pass, &self.camera_bind_group);
+            // Малюємо 3D об'єкти (cubes)
+            for cube in &self.cubes {
+                cube.render(&mut render_pass, &self.camera_bind_group);
+            }
 
             // Малюємо grid (після mesh щоб правильно відображався поверх через alpha)
             self.grid.render(&mut render_pass, &self.camera_bind_group);

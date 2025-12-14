@@ -7,29 +7,42 @@
    WGSL shader для рендерингу 3D mesh об'єктів з базовим освітленням.
 
 🎯 ВІДПОВІДАЛЬНІСТЬ:
-   - Vertex shader: transform position, pass normal та color
+   - Vertex shader: transform position через Model matrix, pass normal та color
    - Fragment shader: базове diffuse освітлення (directional light)
 
 🔗 ЗВ'ЯЗКИ:
    Використовується в: src/rendering/mesh.rs
 
 ⚠️  ВАЖЛИВІ ДЕТАЛІ:
+   - Model matrix: local space → world space
+   - Normal matrix: для коректної трансформації нормалей (inverse transpose)
    - Directional light: фіксований напрямок (зверху-спереду)
    - Ambient light: 0.3 (щоб тіні не були повністю чорними)
-   - Diffuse: dot(normal, light_dir) для освітлення граней
 
 🕐 ІСТОРІЯ:
    2025-12-14: Створено - базовий mesh shader з diffuse lighting
+   2025-12-14: Додано Model matrix та Normal matrix
 
 ═══════════════════════════════════════════════════════════════════════════════
 */
 
-// Camera uniform (той самий що і для grid)
+// Camera uniform (View-Projection matrix)
 struct CameraUniform {
     view_proj: mat4x4<f32>,
 };
 @group(0) @binding(0)
 var<uniform> camera: CameraUniform;
+
+// Transform uniform (Model matrix + Normal matrix)
+struct TransformUniform {
+    model: mat4x4<f32>,
+    normal_matrix_0: vec4<f32>,
+    normal_matrix_1: vec4<f32>,
+    normal_matrix_2: vec4<f32>,
+    _padding: vec4<f32>,
+};
+@group(1) @binding(0)
+var<uniform> transform: TransformUniform;
 
 // Vertex input
 struct VertexInput {
@@ -53,12 +66,17 @@ struct VertexOutput {
 fn vs_main(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
 
-    // Transform position to clip space
-    output.clip_position = camera.view_proj * vec4<f32>(input.position, 1.0);
+    // Transform position: local → world → clip
+    let world_position = transform.model * vec4<f32>(input.position, 1.0);
+    output.clip_position = camera.view_proj * world_position;
 
-    // Pass normal (в майбутньому треба трансформувати через normal matrix)
-    // Поки що без model transform, тому normal залишається як є
-    output.world_normal = input.normal;
+    // Transform normal using normal matrix (3x3 upper-left of inverse transpose)
+    let normal_matrix = mat3x3<f32>(
+        transform.normal_matrix_0.xyz,
+        transform.normal_matrix_1.xyz,
+        transform.normal_matrix_2.xyz
+    );
+    output.world_normal = normal_matrix * input.normal;
 
     // Pass color
     output.color = input.color;

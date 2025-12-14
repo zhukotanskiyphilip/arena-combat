@@ -66,6 +66,7 @@ mod rendering;
 mod fps_counter;
 mod camera;
 mod input;
+mod transform;
 
 use rendering::WgpuRenderer;
 use fps_counter::FpsCounter;

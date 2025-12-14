@@ -989,6 +989,167 @@ depth_stencil: Some(wgpu::DepthStencilState {
 
 ---
 
+### 2025-12-14 (Сесія 8): Transform System + Multiple Objects 🎯
+**Тривалість:** ~30 хвилин
+**Фаза:** Phase 1 - Week 3 - Transform & Positioning
+
+#### Виконано:
+- ✅ **Створено Transform модуль** (`src/transform/`):
+  - `transform/mod.rs` - модуль entry point
+  - `transform/transform.rs` - повна реалізація:
+    - `Transform` struct (position, rotation, scale)
+    - `model_matrix()` - обчислення Model matrix (S*R*T order)
+    - Quaternion rotation (уникає gimbal lock)
+    - Helper методи: `rotate()`, `translate()`, `forward()`, `right()`, `up()`
+    - `set_rotation_euler()` - встановлення обертання через кути
+  - `TransformUniform` - GPU buffer structure:
+    - Model matrix (4x4)
+    - Normal matrix (3x3 для коректної трансформації нормалей)
+    - Proper padding для GPU alignment
+
+- ✅ **Оновлено mesh shader** (`assets/shaders/mesh.wgsl`):
+  - Додано `TransformUniform` struct в shader
+  - group(1) binding(0) для transform uniform
+  - Vertex shader тепер трансформує через Model matrix:
+    ```wgsl
+    let world_position = transform.model * vec4<f32>(input.position, 1.0);
+    output.clip_position = camera.view_proj * world_position;
+    ```
+  - Normal matrix для коректного освітлення при scale/rotation
+
+- ✅ **Оновлено Mesh** (`src/rendering/mesh.rs`):
+  - Mesh тепер містить Transform та TransformUniform
+  - `new()` приймає Transform параметр
+  - Transform bind group (group 1)
+  - `update_transform()` метод для оновлення GPU buffer
+  - Pipeline layout з двома bind group layouts
+
+- ✅ **Створено множинні куби** (`src/rendering/renderer.rs`):
+  - `cubes: Vec<Mesh>` замість одного cube
+  - 4 куби з різними позиціями та кольорами:
+    - Червоний куб (0, 0.5, 0) - центр
+    - Зелений куб (-3, 0.5, 0) - зліва
+    - Синій куб (3, 0.5, 0) - справа
+    - Жовтий куб (0, 0.75, -4) - позаду, більший (1.5x)
+  - Кожен куб має свій Transform uniform
+
+#### Технічні деталі:
+
+**Створені файли:**
+- `src/transform/mod.rs` - transform модуль (30 рядків)
+- `src/transform/transform.rs` - Transform struct (180+ рядків)
+
+**Змінені файли:**
+- `src/main.rs` - додано `mod transform;`
+- `src/rendering/mesh.rs` - Transform integration
+- `src/rendering/renderer.rs` - multiple cubes
+- `assets/shaders/mesh.wgsl` - Model matrix support
+
+**Структура коду після сесії:**
+```
+arena_combat/
+├── src/
+│   ├── main.rs                  # ✅ Оновлено (transform mod)
+│   ├── fps_counter.rs
+│   ├── input/
+│   │   ├── mod.rs
+│   │   └── input_state.rs
+│   ├── camera/
+│   │   ├── mod.rs
+│   │   └── camera.rs
+│   ├── transform/               # ✅ НОВИЙ
+│   │   ├── mod.rs
+│   │   └── transform.rs
+│   └── rendering/
+│       ├── mod.rs
+│       ├── renderer.rs          # ✅ Оновлено (multiple cubes)
+│       ├── grid.rs
+│       └── mesh.rs              # ✅ Оновлено (Transform)
+├── assets/
+│   └── shaders/
+│       ├── grid.wgsl
+│       └── mesh.wgsl            # ✅ Оновлено (Model matrix)
+└── PROGRESS.md                  # ✅ Оновлено
+```
+
+#### Transform Math:
+
+**Model Matrix = T * R * S:**
+```rust
+Mat4::from_scale_rotation_translation(scale, rotation, position)
+```
+
+**Normal Matrix:**
+- `transpose(inverse(model))` для коректної трансформації нормалей
+- Критично для non-uniform scale
+
+**Quaternion Rotation:**
+- Використовуємо `glam::Quat`
+- Уникаємо gimbal lock
+- `from_euler(YXZ, yaw, pitch, roll)` для зручності
+
+#### Cubes Configuration:
+
+| Cube | Position | Size | Color (RGB) |
+|------|----------|------|-------------|
+| Center | (0, 0.5, 0) | 1.0 | (0.8, 0.3, 0.3) Red |
+| Left | (-3, 0.5, 0) | 1.0 | (0.3, 0.8, 0.3) Green |
+| Right | (3, 0.5, 0) | 1.0 | (0.3, 0.3, 0.8) Blue |
+| Back | (0, 0.75, -4) | 1.5 | (0.9, 0.8, 0.2) Yellow |
+
+#### Що працює:
+
+- [x] Transform system (position, rotation, scale)
+- [x] Model matrix обчислення
+- [x] Normal matrix для освітлення
+- [x] Множинні об'єкти на сцені
+- [x] Кожен об'єкт має свій Transform
+- [x] Camera controls працюють з усіма об'єктами
+- [x] Освітлення правильне на всіх кубах
+- [x] FPS стабільний (~60)
+
+#### Візуальний результат:
+
+Тепер при запуску `cargo run` бачимо:
+- Темно-синій фон
+- Координатна сітка 20x20
+- **4 кольорових куби на різних позиціях** ✨
+- Освітлення працює на кожному кубі
+- Можна обертати камеру навколо всієї сцени
+
+#### Статус Phase 1, Week 3:
+
+**Завершено:**
+- ✅ Базове вікно + event loop (Сесія 3)
+- ✅ wgpu renderer + clear color (Сесія 4)
+- ✅ FPS counter (Сесія 4)
+- ✅ 3D camera з perspective projection (Сесія 5)
+- ✅ Grid visualization (Сесія 5)
+- ✅ Camera controls - orbit, zoom, pan (Сесія 6)
+- ✅ 3D Mesh rendering + Cube + Depth Buffer (Сесія 7)
+- ✅ **Transform System + Multiple Objects (Сесія 8)** ✨
+
+#### Наступні кроки (Сесія 9):
+
+**Option A - Delta Time + Animation:**
+- [ ] Delta time tracking
+- [ ] Fixed timestep loop
+- [ ] Анімація обертання куба
+
+**Option B - GLTF Loading:**
+- [ ] Завантаження .glb моделей
+- [ ] Парсинг vertex/index data
+- [ ] Текстури (опційно)
+
+**Option C - Player Character:**
+- [ ] Базовий манекен з примітивів
+- [ ] Player movement (WASD)
+- [ ] Camera слідує за гравцем
+
+**Рекомендація:** Option A (Delta Time) - потрібен для анімацій та gameloop separation.
+
+---
+
 ## 💡 Ключові концепції проекту
 
 ### Філософія бою (з GDD):
