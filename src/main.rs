@@ -67,10 +67,12 @@ mod fps_counter;
 mod camera;
 mod input;
 mod transform;
+mod time;
 
 use rendering::WgpuRenderer;
 use fps_counter::FpsCounter;
 use input::InputState;
+use time::GameTime;
 use std::sync::Arc;
 use winit::{
     application::ApplicationHandler,
@@ -90,6 +92,7 @@ struct App {
     renderer: Option<WgpuRenderer>,
     fps_counter: FpsCounter,
     input_state: InputState,
+    game_time: GameTime,
 }
 
 impl ApplicationHandler for App {
@@ -161,24 +164,29 @@ impl ApplicationHandler for App {
 
             // Redraw request
             WindowEvent::RedrawRequested => {
+                // Оновити час
+                self.game_time.update();
+
                 // Оновити FPS counter
                 self.fps_counter.tick();
 
                 // Оновити заголовок вікна з FPS (кожні 30 кадрів для зменшення overhead)
-                static mut FRAME_COUNT: u32 = 0;
-                unsafe {
-                    FRAME_COUNT += 1;
-                    if FRAME_COUNT % 30 == 0 {
-                        if let Some(window) = &self.window {
-                            let fps = self.fps_counter.fps();
-                            let title = format!(
-                                "Arena Combat Prototype - {:.1} FPS ({:.2}ms)",
-                                fps,
-                                self.fps_counter.frame_time_ms()
-                            );
-                            window.set_title(&title);
-                        }
+                if self.game_time.frame_count() % 30 == 0 {
+                    if let Some(window) = &self.window {
+                        let fps = self.fps_counter.fps();
+                        let title = format!(
+                            "Arena Combat Prototype - {:.1} FPS ({:.2}ms)",
+                            fps,
+                            self.fps_counter.frame_time_ms()
+                        );
+                        window.set_title(&title);
                     }
+                }
+
+                // === ANIMATION UPDATE ===
+                if let Some(renderer) = &mut self.renderer {
+                    // Обертаємо куби з використанням delta time
+                    renderer.update_animations(self.game_time.delta());
                 }
 
                 // === CAMERA UPDATE ===
@@ -298,6 +306,7 @@ fn main() {
         renderer: None,
         fps_counter: FpsCounter::new(),
         input_state: InputState::new(),
+        game_time: GameTime::new(),
     };
 
     // Запустити event loop

@@ -470,4 +470,32 @@ impl WgpuRenderer {
     pub fn size(&self) -> winit::dpi::PhysicalSize<u32> {
         self.size
     }
+
+    /// Оновлює анімації об'єктів
+    ///
+    /// # Аргументи
+    /// * `delta` - Delta time в секундах
+    pub fn update_animations(&mut self, delta: f32) {
+        // Швидкості обертання для кожного куба (радіани/секунда)
+        let rotation_speeds = [
+            1.0_f32,   // Червоний куб - 1 рад/с (~57°/с)
+            -0.7,      // Зелений куб - -0.7 рад/с (протилежний напрямок)
+            1.5,       // Синій куб - 1.5 рад/с (швидше)
+            0.3,       // Жовтий куб - 0.3 рад/с (повільно)
+        ];
+
+        // Обертаємо кожен куб
+        for (i, cube) in self.cubes.iter_mut().enumerate() {
+            if i < rotation_speeds.len() {
+                let rotation_speed = rotation_speeds[i];
+                let rotation_delta = rotation_speed * delta;
+
+                // Обертаємо навколо осі Y
+                cube.transform.rotate(0.0, rotation_delta.to_degrees(), 0.0);
+
+                // Оновлюємо GPU buffer
+                cube.update_transform(&self.queue);
+            }
+        }
+    }
 }
