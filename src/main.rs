@@ -71,6 +71,7 @@ mod time;
 mod player;
 mod combat;
 mod enemy;
+mod physics;
 pub mod debug_log;
 
 use rendering::WgpuRenderer;
@@ -80,14 +81,14 @@ use time::GameTime;
 use player::Player;
 use combat::{Combat, HitboxManager};
 use enemy::{Enemy, spawn_enemies_circle};
+use physics::{PhysicsWorld, ActiveRagdoll};
 use std::sync::Arc;
-use debug_log::log_debug;
 use winit::{
     application::ApplicationHandler,
     event::{WindowEvent, MouseButton, ElementState},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{PhysicalKey, KeyCode},
-    window::{Window, WindowId},
+    window::{Window, WindowId, CursorGrabMode},
 };
 
 // ============================================================================
@@ -106,7 +107,11 @@ struct App {
     hitbox_manager: HitboxManager,
     enemies: Vec<Enemy>,
     enemies_spawned: bool,
-    player_synced: bool, // Синхронізація player.yaw з камерою при старті
+
+    // Physics-based ragdoll
+    physics_world: Option<PhysicsWorld>,
+    ragdoll: Option<ActiveRagdoll>,
+    use_physics_player: bool,
 }
 
 impl ApplicationHandler for App {
@@ -122,7 +127,20 @@ impl ApplicationHandler for App {
 
         // Ініціалізуємо wgpu renderer
         log::info!("Ініціалізація renderer...");
-        let renderer = pollster::block_on(WgpuRenderer::new(window.clone()));
+        let mut renderer = pollster::block_on(WgpuRenderer::new(window.clone()));
+        renderer.show_skeleton = true;  // Увімкнути візуалізацію скелета
+
+        // Захоплюємо та ховаємо курсор для FPS-style керування камерою
+        // Курсор буде прихований і миша завжди обертатиме камеру
+        if let Err(e) = window.set_cursor_grab(CursorGrabMode::Confined) {
+            log::warn!("Не вдалося захопити курсор (Confined): {:?}", e);
+            // Спробуємо Locked як fallback
+            if let Err(e2) = window.set_cursor_grab(CursorGrabMode::Locked) {
+                log::warn!("Не вдалося захопити курсор (Locked): {:?}", e2);
+            }
+        }
+        window.set_cursor_visible(false);
+        log::info!("Курсор захоплено та приховано");
 
         self.window = Some(window);
         self.renderer = Some(renderer);
@@ -220,17 +238,6 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                // === PLAYER YAW SYNC (one-time at start) ===
-                if !self.player_synced {
-                    if let Some(renderer) = &self.renderer {
-                        // Синхронізуємо player.yaw з камерою: персонаж спиною до камери
-                        self.player.yaw = renderer.camera.yaw + std::f32::consts::PI;
-                        self.player_synced = true;
-                        log_debug(&format!("SYNC: player.yaw={:.1}° camera.yaw={:.1}°",
-                            self.player.yaw.to_degrees(), renderer.camera.yaw.to_degrees()));
-                    }
-                }
-
                 // === COMBAT UPDATE ===
                 self.combat.update(self.game_time.delta());
 
@@ -264,6 +271,23 @@ impl ApplicationHandler for App {
                     }
                 }
 
+                // === PHYSICS UPDATE ===
+                if let (Some(physics), Some(ragdoll)) = (&mut self.physics_world, &mut self.ragdoll) {
+                    let delta = self.game_time.delta();
+
+                    // Оновлюємо ragdoll (м'язи + цільова поза)
+                    ragdoll.update(physics, delta);
+
+                    // Крок фізики
+                    physics.step(delta);
+
+                    // Оновлюємо skeleton renderer з bone transforms
+                    if let Some(renderer) = &mut self.renderer {
+                        let bone_transforms = ragdoll.get_bone_transforms(physics);
+                        renderer.update_skeleton(&bone_transforms);
+                    }
+                }
+
                 // === ANIMATION UPDATE ===
                 if let Some(renderer) = &mut self.renderer {
                     // Обертаємо куби з використанням delta time
@@ -279,44 +303,48 @@ impl ApplicationHandler for App {
                 if let Some(renderer) = &mut self.renderer {
                     let delta = self.game_time.delta();
 
-                    // Mouse look (права кнопка миші) - обертає І камеру І гравця
-                    if self.input_state.mouse_right {
+                    // Mouse look - миша ЗАВЖДИ обертає камеру (як в екшн іграх)
+                    // Курсор захоплений та прихований, тому немає потреби тримати кнопку
+                    {
                         let (delta_x, delta_y) = self.input_state.mouse_delta();
-                        let sensitivity = 0.003;
+
+                        // Базова чутливість для звичайної миші
+                        // Тачпад зазвичай дає менші дельти, тому автоматично підвищуємо
+                        let base_sensitivity = 0.003;
+
+                        // Якщо delta дуже мала (тачпад) - збільшуємо чутливість
+                        let magnitude = (delta_x * delta_x + delta_y * delta_y).sqrt();
+                        let sensitivity = if magnitude > 0.0 && magnitude < 5.0 {
+                            // Тачпад дає малі delta - підвищуємо чутливість
+                            base_sensitivity * 3.0
+                        } else {
+                            base_sensitivity
+                        };
+
                         let delta_yaw = (delta_x as f32) * sensitivity;
                         let delta_pitch = (delta_y as f32) * sensitivity;
 
-                        if delta_x.abs() > 0.1 || delta_y.abs() > 0.1 {
+                        // Знижений поріг для тачпада
+                        if delta_x.abs() > 0.01 || delta_y.abs() > 0.01 {
                             renderer.camera.rotate_third_person(delta_yaw, delta_pitch);
-                            // Гравець обертається разом з камерою
-                            self.player.yaw += delta_yaw;
-
-                            // DEBUG: порівнюємо камеру і тіло
-                            log_debug(&format!("MOUSE: cam_yaw={:.1}° player_yaw={:.1}° delta={:.3}",
-                                renderer.camera.yaw.to_degrees(),
-                                self.player.yaw.to_degrees(),
-                                delta_yaw));
                         }
                     }
                     self.input_state.reset_mouse_delta();
 
-                    // Q/E - ручне обертання тіла
+                    // Q/E - обертає камеру
+                    let turn_speed = 2.0_f32; // радіан/секунда
                     if self.input_state.is_q_pressed() {
-                        let old = self.player.yaw;
-                        self.player.yaw -= 2.0 * delta;
-                        log_debug(&format!("Q_KEY: player.yaw {:.1}° -> {:.1}°", old.to_degrees(), self.player.yaw.to_degrees()));
+                        renderer.camera.rotate_third_person(-turn_speed * delta, 0.0);
                     }
                     if self.input_state.is_e_pressed() {
-                        let old = self.player.yaw;
-                        self.player.yaw += 2.0 * delta;
-                        log_debug(&format!("E_KEY: player.yaw {:.1}° -> {:.1}°", old.to_degrees(), self.player.yaw.to_degrees()));
+                        renderer.camera.rotate_third_person(turn_speed * delta, 0.0);
                     }
 
                     // Отримуємо camera directions для camera-relative руху
                     let cam_forward = renderer.camera.forward_xz();
                     let cam_right = renderer.camera.right_xz();
 
-                    // Обчислюємо input
+                    // Обчислюємо input direction
                     let mut move_dir = glam::Vec3::ZERO;
 
                     // W/S - рух вперед/назад (відносно камери)
@@ -335,23 +363,52 @@ impl ApplicationHandler for App {
                         move_dir += cam_right;
                     }
 
-                    // Нормалізуємо якщо є рух (щоб діагональний рух не був швидшим)
-                    if move_dir.length_squared() > 0.01 {
-                        move_dir = move_dir.normalize();
+                    // === ТРЕТЯ ОСОБА: ПЕРСОНАЖ ДИВИТЬСЯ В НАПРЯМКУ РУХУ ===
+                    if self.use_physics_player {
+                        // Фізичний ragdoll - передаємо напрямок руху
+                        if let Some(ragdoll) = &mut self.ragdoll {
+                            ragdoll.set_move_direction(move_dir);
+                        }
+                    } else {
+                        // Старий кінематичний гравець
+                        if move_dir.length_squared() > 0.01 {
+                            move_dir = move_dir.normalize();
 
-                        // Рухаємо гравця
-                        self.player.position += move_dir * self.player.move_speed * delta;
+                            // Встановлюємо цільовий напрямок для плавного обертання
+                            self.player.set_target_direction(move_dir);
+
+                            // Рухаємо гравця
+                            self.player.position += move_dir * self.player.move_speed * delta;
+                        } else {
+                            // Коли не рухаємось - персонаж зберігає поточний напрямок
+                            self.player.is_moving = false;
+                        }
+
+                        // Плавне обертання персонажа до target_yaw
+                        self.player.smooth_rotate(delta);
                     }
                 }
 
                 // === PLAYER MESH UPDATE ===
-                if let Some(renderer) = &mut self.renderer {
-                    renderer.update_player(&self.player, &self.combat);
+                if !self.use_physics_player {
+                    if let Some(renderer) = &mut self.renderer {
+                        renderer.update_player(&self.player, &self.combat);
+                    }
                 }
 
                 // === CAMERA POSITION UPDATE (слідує за гравцем) ===
                 if let Some(renderer) = &mut self.renderer {
-                    renderer.camera.update_third_person(self.player.position, 1.2);
+                    let player_pos = if self.use_physics_player {
+                        // Позиція з фізичного ragdoll
+                        if let (Some(physics), Some(ragdoll)) = (&self.physics_world, &self.ragdoll) {
+                            ragdoll.get_position(physics)
+                        } else {
+                            self.player.position
+                        }
+                    } else {
+                        self.player.position
+                    };
+                    renderer.camera.update_third_person(player_pos, 1.2);
                 }
 
                 // Рендеринг
@@ -394,6 +451,20 @@ impl ApplicationHandler for App {
             window.request_redraw();
         }
     }
+
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: winit::event::DeviceId,
+        event: winit::event::DeviceEvent,
+    ) {
+        // Raw mouse motion - краще працює коли курсор захоплений
+        if let winit::event::DeviceEvent::MouseMotion { delta } = event {
+            // Debug: раскоментуй для діагностики тачпада
+            // log::debug!("RAW_DELTA: x={:.3}, y={:.3}", delta.0, delta.1);
+            self.input_state.accumulate_raw_mouse_delta(delta.0, delta.1);
+        }
+    }
 }
 
 // ============================================================================
@@ -420,6 +491,14 @@ fn main() {
     );
     log::info!("Created {} enemies", enemies.len());
 
+    // Створюємо фізичний світ та ragdoll
+    let mut physics_world = PhysicsWorld::new();
+    physics_world.create_ground(0.0);  // Земля на Y=0
+
+    // Створюємо ragdoll на висоті 2м
+    let ragdoll = ActiveRagdoll::new(&mut physics_world, glam::Vec3::new(0.0, 2.0, 0.0));
+    log::info!("Physics ragdoll created");
+
     // Створити app
     let mut app = App {
         window: None,
@@ -432,7 +511,9 @@ fn main() {
         hitbox_manager: HitboxManager::new(),
         enemies,
         enemies_spawned: false,
-        player_synced: false,
+        physics_world: Some(physics_world),
+        ragdoll: Some(ragdoll),
+        use_physics_player: true,  // Увімкнено фізичного ragdoll гравця
     };
 
     // Запустити event loop

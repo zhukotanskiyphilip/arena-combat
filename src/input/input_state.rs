@@ -75,6 +75,10 @@ pub struct InputState {
     /// Попередня позиція миші (для обчислення delta)
     previous_mouse_position: (f64, f64),
 
+    /// Raw mouse delta (з DeviceEvent::MouseMotion)
+    /// Краще працює коли курсор захоплений
+    raw_mouse_delta: (f64, f64),
+
     /// Ліва кнопка миші натиснута
     pub mouse_left: bool,
 
@@ -95,6 +99,7 @@ impl InputState {
         Self {
             mouse_position: (0.0, 0.0),
             previous_mouse_position: (0.0, 0.0),
+            raw_mouse_delta: (0.0, 0.0),
             mouse_left: false,
             mouse_right: false,
             mouse_middle: false,
@@ -126,22 +131,38 @@ impl InputState {
     /// Повертає mouse delta (різниця між поточною і попередньою позицією)
     ///
     /// Використовується для camera rotation.
+    /// Перевіряє raw_mouse_delta спочатку (краще для захопленого курсора),
+    /// якщо немає - використовує position delta.
     ///
     /// # Повертає
     /// (delta_x, delta_y) в screen space
     pub fn mouse_delta(&self) -> (f64, f64) {
+        // Якщо є raw delta - використовуємо його (краще для locked cursor)
+        if self.raw_mouse_delta.0.abs() > 0.001 || self.raw_mouse_delta.1.abs() > 0.001 {
+            return self.raw_mouse_delta;
+        }
+        // Fallback до position delta
         (
             self.mouse_position.0 - self.previous_mouse_position.0,
             self.mouse_position.1 - self.previous_mouse_position.1,
         )
     }
 
-    /// Скидає mouse delta (встановлює previous = current)
+    /// Скидає mouse delta (встановлює previous = current, очищує raw delta)
     ///
     /// Викликається після обробки mouse delta в update loop,
     /// щоб не обробляти той самий delta двічі.
     pub fn reset_mouse_delta(&mut self) {
         self.previous_mouse_position = self.mouse_position;
+        self.raw_mouse_delta = (0.0, 0.0);
+    }
+
+    /// Додає raw mouse motion delta (з DeviceEvent::MouseMotion)
+    ///
+    /// Накопичує delta протягом кадру (може бути кілька подій)
+    pub fn accumulate_raw_mouse_delta(&mut self, delta_x: f64, delta_y: f64) {
+        self.raw_mouse_delta.0 += delta_x;
+        self.raw_mouse_delta.1 += delta_y;
     }
 
     /// Оновлює стан кнопки миші

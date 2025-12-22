@@ -71,8 +71,10 @@ use crate::player::Player;
 use crate::combat::Combat;
 use crate::enemy::Enemy;
 use crate::debug_log::log_debug;
+use crate::physics::BoneId;
 use super::grid::Grid;
 use super::mesh::{Mesh, generate_cube, generate_player_mannequin, generate_player_body, generate_weapon_arm};
+use super::skeleton_renderer::SkeletonRenderer;
 use glam::{Vec3, Quat};
 
 /// Основний renderer на базі wgpu
@@ -131,6 +133,12 @@ pub struct WgpuRenderer {
 
     /// Camera bind group layout (зберігаємо для створення нових mesh)
     camera_bind_group_layout: wgpu::BindGroupLayout,
+
+    /// Skeleton renderer для фізичного ragdoll
+    skeleton_renderer: SkeletonRenderer,
+
+    /// Чи показувати скелет (для debug)
+    pub show_skeleton: bool,
 }
 
 impl WgpuRenderer {
@@ -354,6 +362,9 @@ impl WgpuRenderer {
         // Enemy meshes (порожній вектор, заповниться через spawn_enemies)
         let enemy_meshes = Vec::new();
 
+        // 15. Створити Skeleton Renderer для фізичного ragdoll
+        let skeleton_renderer = SkeletonRenderer::new(&device, &config, &camera_bind_group_layout);
+
         log::info!("wgpu renderer готовий до роботи!");
         log::info!("Camera: position={:?}, target={:?}", camera.position, camera.target);
         log::info!("Створено {} кубів з різними позиціями", cubes.len());
@@ -378,6 +389,8 @@ impl WgpuRenderer {
             weapon_mesh,
             enemy_meshes,
             camera_bind_group_layout,
+            skeleton_renderer,
+            show_skeleton: false,
         }
     }
 
@@ -502,15 +515,23 @@ impl WgpuRenderer {
                 cube.render(&mut render_pass, &self.camera_bind_group);
             }
 
-            // Малюємо player body
-            self.player_mesh.render(&mut render_pass, &self.camera_bind_group);
+            // Малюємо старий player mesh ТІЛЬКИ якщо скелет вимкнено
+            if !self.show_skeleton {
+                // Малюємо player body
+                self.player_mesh.render(&mut render_pass, &self.camera_bind_group);
 
-            // Малюємо player weapon/arm
-            self.weapon_mesh.render(&mut render_pass, &self.camera_bind_group);
+                // Малюємо player weapon/arm
+                self.weapon_mesh.render(&mut render_pass, &self.camera_bind_group);
+            }
 
             // Малюємо enemies
             for enemy_mesh in &self.enemy_meshes {
                 enemy_mesh.render(&mut render_pass, &self.camera_bind_group);
+            }
+
+            // Малюємо skeleton (якщо увімкнено)
+            if self.show_skeleton {
+                self.skeleton_renderer.render(&mut render_pass, &self.camera_bind_group);
             }
 
             // Малюємо grid (після mesh щоб правильно відображався поверх через alpha)
@@ -655,6 +676,14 @@ impl WgpuRenderer {
         }
 
         log::info!("Spawned {} enemy meshes", self.enemy_meshes.len());
+    }
+
+    /// Оновлює bone transforms для skeleton renderer
+    ///
+    /// # Аргументи
+    /// * `bone_transforms` - Список кісток з позиціями та ротаціями
+    pub fn update_skeleton(&mut self, bone_transforms: &[(BoneId, Vec3, Quat)]) {
+        self.skeleton_renderer.update_bones(&self.queue, bone_transforms);
     }
 
     /// Оновлює позиції enemy meshes

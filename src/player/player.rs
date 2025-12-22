@@ -34,15 +34,21 @@ pub struct Player {
     /// Позиція в world space
     pub position: Vec3,
 
-    /// Кут повороту навколо Y (в радіанах)
+    /// Поточний кут повороту навколо Y (в радіанах)
     /// 0 = дивиться в -Z напрямку
     pub yaw: f32,
+
+    /// Цільовий кут (куди персонаж повертається)
+    pub target_yaw: f32,
 
     /// Швидкість руху (units/second)
     pub move_speed: f32,
 
     /// Швидкість повороту (radians/second)
     pub turn_speed: f32,
+
+    /// Чи персонаж зараз рухається
+    pub is_moving: bool,
 }
 
 impl Player {
@@ -54,8 +60,10 @@ impl Player {
         Self {
             position,
             yaw: 0.0,
-            move_speed: 5.0,  // 5 units/second
-            turn_speed: 3.0,  // ~170 degrees/second
+            target_yaw: 0.0,
+            move_speed: 5.0,   // 5 units/second
+            turn_speed: 10.0,  // швидке плавне обертання
+            is_moving: false,
         }
     }
 
@@ -126,10 +134,84 @@ impl Player {
             self.turn(turn, delta);
         }
     }
+
+    /// Встановлює цільовий кут на основі напрямку руху
+    ///
+    /// # Аргументи
+    /// * `move_dir` - Напрямок руху в world space (нормалізований)
+    pub fn set_target_direction(&mut self, move_dir: Vec3) {
+        if move_dir.length_squared() > 0.01 {
+            // Player forward = (-sin(yaw), 0, -cos(yaw))
+            // Щоб forward == move_dir:
+            //   -sin(yaw) = move_dir.x  →  sin(yaw) = -move_dir.x
+            //   -cos(yaw) = move_dir.z  →  cos(yaw) = -move_dir.z
+            // Тому: yaw = atan2(-move_dir.x, -move_dir.z)
+            self.target_yaw = (-move_dir.x).atan2(-move_dir.z);
+            self.is_moving = true;
+        } else {
+            self.is_moving = false;
+        }
+    }
+
+    /// Плавно обертає персонажа до target_yaw
+    ///
+    /// # Аргументи
+    /// * `delta` - Delta time в секундах
+    pub fn smooth_rotate(&mut self, delta: f32) {
+        // Обчислюємо найкоротшу різницю кутів
+        let mut diff = self.target_yaw - self.yaw;
+
+        // Нормалізуємо до [-PI, PI] для найкоротшого шляху
+        while diff > std::f32::consts::PI {
+            diff -= std::f32::consts::TAU;
+        }
+        while diff < -std::f32::consts::PI {
+            diff += std::f32::consts::TAU;
+        }
+
+        // Плавне обертання
+        let max_rotation = self.turn_speed * delta;
+        if diff.abs() <= max_rotation {
+            // Достатньо близько - завершуємо
+            self.yaw = self.target_yaw;
+        } else {
+            // Обертаємось у напрямку target
+            self.yaw += diff.signum() * max_rotation;
+        }
+
+        // Нормалізуємо yaw
+        self.normalize_yaw();
+    }
+
+    /// Нормалізує yaw до [-PI, PI]
+    fn normalize_yaw(&mut self) {
+        while self.yaw > std::f32::consts::PI {
+            self.yaw -= std::f32::consts::TAU;
+        }
+        while self.yaw < -std::f32::consts::PI {
+            self.yaw += std::f32::consts::TAU;
+        }
+    }
+
+    /// Встановлює yaw напряму (для синхронізації з камерою коли не рухаємось)
+    pub fn set_yaw(&mut self, yaw: f32) {
+        self.yaw = yaw;
+        self.target_yaw = yaw;
+        self.normalize_yaw();
+    }
 }
 
 impl Default for Player {
     fn default() -> Self {
         Self::new(Vec3::ZERO)
     }
+}
+
+/// Допоміжна функція для обчислення yaw з camera.yaw
+/// Синхронізує player forward з camera forward
+pub fn camera_yaw_to_player_yaw(cam_yaw: f32) -> f32 {
+    // camera.forward_xz() = (-cos(cam_yaw), 0, -sin(cam_yaw))
+    // player.forward()    = (-sin(player_yaw), 0, -cos(player_yaw))
+    // Щоб вони співпадали: player_yaw = PI/2 - cam_yaw
+    std::f32::consts::FRAC_PI_2 - cam_yaw
 }

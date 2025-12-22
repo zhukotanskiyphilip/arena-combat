@@ -1,5 +1,11 @@
 @echo off
-cd /d c:\Claude\arena_combat
-cargo run > debug\game.log 2>&1
-echo Logs saved to debug\game.log
-pause
+cd /d "%~dp0"
+echo Building...
+cargo build
+if %ERRORLEVEL% EQU 0 (
+    echo Starting game...
+    target\debug\arena_combat.exe
+) else (
+    echo Build failed!
+    pause
+)

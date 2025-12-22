@@ -88,6 +88,9 @@ pub struct Camera {
 
     /// Відстань камери від target
     pub distance: f32,
+
+    /// Згладжена позиція target (для smooth follow)
+    smoothed_target: Vec3,
 }
 
 impl Camera {
@@ -131,6 +134,7 @@ impl Camera {
             yaw,
             pitch,
             distance: distance.max(1.0),
+            smoothed_target: target,
         }
     }
 
@@ -333,13 +337,22 @@ impl Camera {
     /// Оновлює камеру для third person view
     ///
     /// Камера позиціонується за спиною target на основі yaw/pitch/distance.
+    /// Використовує згладжування для плавного слідування.
     ///
     /// # Аргументи
     /// * `target_pos` - Позиція гравця (target point)
     /// * `target_height` - Висота точки на яку дивиться камера (груди гравця)
     pub fn update_third_person(&mut self, target_pos: Vec3, target_height: f32) {
-        // Target = позиція гравця + height offset (дивимось на груди)
-        self.target = target_pos + Vec3::new(0.0, target_height, 0.0);
+        // Реальна цільова позиція (позиція гравця + height offset)
+        let actual_target = target_pos + Vec3::new(0.0, target_height, 0.0);
+
+        // Згладжуємо позицію target (lerp)
+        // Smooth factor: менше = плавніше, більше = швидше реакція
+        let smooth_factor = 0.15;
+        self.smoothed_target = self.smoothed_target.lerp(actual_target, smooth_factor);
+
+        // Target = згладжена позиція
+        self.target = self.smoothed_target;
 
         // Обчислюємо позицію камери на основі spherical coordinates
         // yaw = горизонтальний кут (навколо Y)
