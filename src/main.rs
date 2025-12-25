@@ -80,7 +80,7 @@ use input::InputState;
 use time::GameTime;
 use player::Player;
 use combat::{Combat, HitboxManager};
-use enemy::{Enemy, spawn_enemies_circle};
+use enemy::Enemy;
 use physics::{PhysicsWorld, ActiveRagdoll};
 use std::sync::Arc;
 use winit::{
@@ -472,9 +472,31 @@ impl ApplicationHandler for App {
 // ============================================================================
 
 fn main() {
-    // Ініціалізація логування
-    env_logger::init();
+    // Налаштовуємо panic hook для логування паніки у файл
+    debug_log::setup_panic_hook();
 
+    // Ініціалізація логування з перенаправленням у файл
+    // Встановлюємо RUST_LOG якщо не встановлено (для wgpu validation)
+    if std::env::var("RUST_LOG").is_err() {
+        std::env::set_var("RUST_LOG", "warn,wgpu_core=warn,wgpu_hal=warn");
+    }
+
+    // Створюємо кастомний logger що пише і в консоль і в файл
+    env_logger::Builder::from_default_env()
+        .format(|buf, record| {
+            use std::io::Write;
+            let msg = format!("[{}] {}: {}", record.level(), record.target(), record.args());
+
+            // Логуємо у файл для wgpu помилок та попереджень
+            if record.target().starts_with("wgpu") || record.level() <= log::Level::Warn {
+                debug_log::log_console(&msg);
+            }
+
+            writeln!(buf, "{}", msg)
+        })
+        .init();
+
+    debug_log::log_console("=== Application Started ===");
     log::info!("=== Arena Combat Prototype ===");
     log::info!("Версія: 0.1.0");
     log::info!("Phase 1: Week 1-2 - Basic Rendering");
@@ -483,13 +505,8 @@ fn main() {
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    // Spawn enemies по колу навколо центру арени
-    let enemies = spawn_enemies_circle(
-        glam::Vec3::ZERO, // center
-        8.0,              // radius
-        6,                // count - 6 ворогів по колу
-    );
-    log::info!("Created {} enemies", enemies.len());
+    // Enemies вимкнені для тестування ragdoll
+    let enemies = Vec::new();
 
     // Створюємо фізичний світ та ragdoll
     let mut physics_world = PhysicsWorld::new();

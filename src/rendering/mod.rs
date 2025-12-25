@@ -35,6 +35,7 @@ pub mod renderer;
 pub mod grid;
 pub mod mesh;
 pub mod skeleton_renderer;
+pub mod screenshot;
 
 // Реєкспортуємо для зручності
 pub use renderer::WgpuRenderer;

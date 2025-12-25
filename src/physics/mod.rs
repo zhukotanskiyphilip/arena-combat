@@ -155,8 +155,16 @@ impl PhysicsWorld {
             .build();
         let ground_handle = self.rigid_body_set.insert(ground);
 
+        // Ground має колізуватись з GROUP_1 (кістками скелета)
+        // membership: GROUP_2 (ground group)
+        // filter: ALL (колізія з усіма)
         let ground_collider = ColliderBuilder::cuboid(50.0, 0.1, 50.0)
             .friction(0.8)
+            .restitution(0.0)  // Без відскоку
+            .collision_groups(InteractionGroups::new(
+                Group::GROUP_2,  // Ground is in GROUP_2
+                Group::ALL,      // Collide with everything
+            ))
             .build();
         self.collider_set.insert_with_parent(ground_collider, ground_handle, &mut self.rigid_body_set);
     }

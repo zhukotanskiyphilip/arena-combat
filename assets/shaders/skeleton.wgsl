@@ -1,4 +1,9 @@
 // Skeleton shader - instanced rendering для кісток
+//
+// ПІДХІД: Pre-generated geometry
+// - Кожен тип кістки має свій mesh з правильними розмірами
+// - Shader просто застосовує position/rotation (без scaling/taper)
+// - Це гарантує правильні пропорції капсул
 
 struct CameraUniform {
     view_proj: mat4x4<f32>,
@@ -17,7 +22,7 @@ struct InstanceInput {
     @location(3) model_matrix_1: vec4<f32>,
     @location(4) model_matrix_2: vec4<f32>,
     @location(5) model_matrix_3: vec4<f32>,
-    @location(6) color: vec3<f32>,
+    @location(6) color: vec4<f32>, // rgb = color, a = unused (1.0)
 }
 
 struct VertexOutput {
@@ -38,6 +43,7 @@ fn vs_main(
         instance.model_matrix_3,
     );
 
+    // Transform position
     let world_position = model_matrix * vec4<f32>(vertex.position, 1.0);
 
     // Normal matrix (upper-left 3x3 of model matrix)
@@ -50,7 +56,7 @@ fn vs_main(
     var output: VertexOutput;
     output.clip_position = camera.view_proj * world_position;
     output.world_normal = normalize(normal_matrix * vertex.normal);
-    output.color = instance.color;
+    output.color = instance.color.rgb;
 
     return output;
 }

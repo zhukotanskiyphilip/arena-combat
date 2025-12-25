@@ -15,11 +15,11 @@
 
 use rapier3d::prelude::*;
 use rapier3d::prelude::nalgebra;
-use rapier3d::prelude::nalgebra::UnitQuaternion;
 use glam::{Vec3, Quat};
 use std::collections::HashMap;
 
 use super::PhysicsWorld;
+use crate::debug_log::log_debug;
 
 /// Ідентифікатор кістки (оптимізовано: 11 кісток)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -233,7 +233,7 @@ pub struct Skeleton {
     /// Rigid body handles для кожної кістки
     pub bodies: HashMap<BoneId, RigidBodyHandle>,
 
-    /// Joint handles
+    /// Impulse joint handles (краща стабільність для active ragdoll)
     pub joints: HashMap<BoneId, ImpulseJointHandle>,
 
     /// Дані кісток
@@ -266,117 +266,189 @@ impl Skeleton {
     }
 
     /// Визначає параметри всіх кісток (оптимізовано: 11 кісток)
+    ///
+    /// ПРОПОРЦІЇ З РЕФЕРЕНСНОГО ЗОБРАЖЕННЯ (математично виміряні)
+    /// Загальна висота = 1.8м, всі пропорції як частки від висоти
+    ///
+    /// ВЕРТИКАЛЬНІ ПОЗИЦІЇ (від землі):
+    /// - 0.00 (0.00м) - ground
+    /// - 0.03 (0.05м) - ankles
+    /// - 0.25 (0.45м) - knees (1/4 висоти!)
+    /// - 0.50 (0.90м) - crotch (ТОЧНО середина!)
+    /// - 0.62 (1.12м) - elbows
+    /// - 0.84 (1.51м) - shoulders
+    /// - 0.88 (1.58м) - chin
+    /// - 1.00 (1.80м) - crown
     fn define_bones(&mut self) {
-        // Торс - 3 кістки
+        // === БАЗОВІ КОНСТАНТИ ===
+        const TOTAL_HEIGHT: f32 = 1.80;
+
+        // === ВЕРТИКАЛЬНІ ПОЗИЦІЇ (пропорції × 1.8м) ===
+        // const GROUND: f32 = 0.0;
+        // const ANKLE: f32 = 0.05;      // 0.03 × 1.8
+        const KNEE: f32 = 0.45;          // 0.25 × 1.8
+        const CROTCH: f32 = 0.90;        // 0.50 × 1.8 - СЕРЕДИНА!
+        // const ELBOW: f32 = 1.12;      // 0.62 × 1.8
+        const SHOULDER: f32 = 1.51;      // 0.84 × 1.8
+        // const CHIN: f32 = 1.58;       // 0.88 × 1.8
+        // const CROWN: f32 = 1.80;      // 1.00 × 1.8
+
+        // === ШИРИНИ (пропорції × 1.8м) ===
+        const SHOULDER_HALF_WIDTH: f32 = 0.43;  // 0.24 × 1.8 - від центру до краю плеча
+        const HIP_HALF_WIDTH: f32 = 0.14;       // 0.08 × 1.8 - від центру до hip joint
+        const CHEST_RADIUS: f32 = 0.16;         // 0.09 × 1.8 - радіус грудей
+        const PELVIS_RADIUS: f32 = 0.14;        // 0.08 × 1.8 - радіус тазу
+
+        // === ДІАМЕТРИ КІНЦІВОК (пропорції × 1.8м) ===
+        const THIGH_RADIUS: f32 = 0.08;         // 0.045 × 1.8 - радіус стегна
+        const CALF_RADIUS: f32 = 0.045;         // 0.025 × 1.8 - радіус гомілки
+        const BICEP_RADIUS: f32 = 0.05;         // 0.028 × 1.8 - радіус біцепса
+        const FOREARM_RADIUS: f32 = 0.036;      // 0.02 × 1.8 - радіус передпліччя
+        const HEAD_RADIUS: f32 = 0.09;          // 0.05 × 1.8 - радіус голови
+
+        // === ДОВЖИНИ СЕГМЕНТІВ (пропорції × 1.8м) ===
+        const HEAD_LENGTH: f32 = 0.22;          // 0.12 × 1.8
+        const NECK_LENGTH: f32 = 0.07;          // 0.04 × 1.8
+        const TORSO_LENGTH: f32 = 0.61;         // 0.34 × 1.8 (shoulders to crotch)
+        const THIGH_LENGTH: f32 = 0.45;         // 0.25 × 1.8 (crotch to knee)
+        const CALF_LENGTH: f32 = 0.40;          // 0.22 × 1.8 (knee to ankle)
+        const UPPER_ARM_LENGTH: f32 = 0.32;     // 0.18 × 1.8
+        const FOREARM_LENGTH: f32 = 0.29;       // 0.16 × 1.8
+
+        // Shoulder joint виступає за торс
+        const SHOULDER_OFFSET: f32 = SHOULDER_HALF_WIDTH - CHEST_RADIUS + 0.02;  // ~0.29м від центру
+
+        // === ТОРС (3 кістки) ===
+        // Pelvis + Spine разом = TORSO_LENGTH (0.61м)
+        // Розділяємо: Pelvis ~0.15м, Spine ~0.46м
+
+        // Pelvis: таз - нижня частина торсу
         self.bones.insert(BoneId::Pelvis, Bone {
             id: BoneId::Pelvis,
-            length: 0.2,
-            radius: 0.12,
-            mass: 10.0,
+            length: 0.15,
+            radius: PELVIS_RADIUS,  // 0.14м
+            mass: 12.0,
             local_offset: Vec3::ZERO,
-            angle_limits: AngleLimits::free(), // Root - без обмежень
+            angle_limits: AngleLimits::free(),
         });
 
-        // Spine - об'єднує старий Spine + Chest
+        // Spine: від тазу до плечей (основна частина торсу)
         self.bones.insert(BoneId::Spine, Bone {
             id: BoneId::Spine,
-            length: 0.45,  // Довший - об'єднує spine+chest
-            radius: 0.11,
-            mass: 8.0,
-            local_offset: Vec3::new(0.0, 0.2, 0.0),
+            length: TORSO_LENGTH - 0.15,  // 0.46м
+            radius: CHEST_RADIUS,         // 0.16м - широкі груди
+            mass: 10.0,
+            local_offset: Vec3::new(0.0, 0.075, 0.0),  // Pelvis length/2
             angle_limits: AngleLimits::spine(),
         });
 
-        // Head - об'єднує Neck + Head
+        // Head: голова + шия
         self.bones.insert(BoneId::Head, Bone {
             id: BoneId::Head,
-            length: 0.25,  // Включає шию
-            radius: 0.09,
-            mass: 4.5,
-            local_offset: Vec3::new(0.0, 0.45, 0.0),  // Від верху spine
+            length: HEAD_LENGTH + NECK_LENGTH,  // 0.29м
+            radius: HEAD_RADIUS,                // 0.09м
+            mass: 5.0,
+            local_offset: Vec3::new(0.0, 0.23, 0.0),  // Spine length/2
             angle_limits: AngleLimits::neck(),
         });
 
-        // Ліва рука - 2 кістки (arms connect directly to spine)
+        // === РУКИ (4 кістки) ===
+        // З референсу: upper arm = 0.32м, forearm = 0.29м
+
+        // Ліва рука: плече (upper arm / bicep)
         self.bones.insert(BoneId::LeftUpperArm, Bone {
             id: BoneId::LeftUpperArm,
-            length: 0.28,
-            radius: 0.04,
-            mass: 2.0,
-            local_offset: Vec3::new(-0.15, 0.35, 0.0),  // Від spine
+            length: UPPER_ARM_LENGTH,   // 0.32м
+            radius: BICEP_RADIUS,       // 0.05м
+            mass: 2.5,
+            // Плече кріпиться збоку від spine, трохи нижче верху
+            local_offset: Vec3::new(-SHOULDER_OFFSET, 0.15, 0.0),
             angle_limits: AngleLimits::shoulder(),
         });
 
+        // Ліва рука: передпліччя (forearm)
         self.bones.insert(BoneId::LeftLowerArm, Bone {
             id: BoneId::LeftLowerArm,
-            length: 0.25,
-            radius: 0.035,
-            mass: 1.0,
-            local_offset: Vec3::new(-0.28, 0.0, 0.0),
+            length: FOREARM_LENGTH,     // 0.29м
+            radius: FOREARM_RADIUS,     // 0.036м
+            mass: 1.5,
+            local_offset: Vec3::new(0.0, -UPPER_ARM_LENGTH, 0.0),
             angle_limits: AngleLimits::elbow(),
         });
 
-        // Права рука - 2 кістки
+        // Права рука: плече (upper arm / bicep)
         self.bones.insert(BoneId::RightUpperArm, Bone {
             id: BoneId::RightUpperArm,
-            length: 0.28,
-            radius: 0.04,
-            mass: 2.0,
-            local_offset: Vec3::new(0.15, 0.35, 0.0),  // Від spine
+            length: UPPER_ARM_LENGTH,
+            radius: BICEP_RADIUS,
+            mass: 2.5,
+            local_offset: Vec3::new(SHOULDER_OFFSET, 0.15, 0.0),
             angle_limits: AngleLimits::shoulder(),
         });
 
+        // Права рука: передпліччя (forearm)
         self.bones.insert(BoneId::RightLowerArm, Bone {
             id: BoneId::RightLowerArm,
-            length: 0.25,
-            radius: 0.035,
-            mass: 1.0,
-            local_offset: Vec3::new(0.28, 0.0, 0.0),
+            length: FOREARM_LENGTH,
+            radius: FOREARM_RADIUS,
+            mass: 1.5,
+            local_offset: Vec3::new(0.0, -UPPER_ARM_LENGTH, 0.0),
             angle_limits: AngleLimits::elbow(),
         });
 
-        // Ліва нога - 2 кістки
+        // === НОГИ (4 кістки) ===
+        // З референсу: thigh = 0.45м, calf = 0.40м
+        // Total leg = 0.85м (crotch 0.90м - ankle 0.05м)
+
+        // Ліва нога: стегно (thigh)
         self.bones.insert(BoneId::LeftUpperLeg, Bone {
             id: BoneId::LeftUpperLeg,
-            length: 0.42,
-            radius: 0.06,
-            mass: 5.0,
-            local_offset: Vec3::new(-0.1, -0.1, 0.0),
+            length: THIGH_LENGTH,       // 0.45м
+            radius: THIGH_RADIUS,       // 0.08м - масивне
+            mass: 8.0,
+            // Кріпиться до низу pelvis, збоку
+            local_offset: Vec3::new(-HIP_HALF_WIDTH, -0.075, 0.0),
             angle_limits: AngleLimits::hip(),
         });
 
+        // Ліва нога: гомілка (calf)
         self.bones.insert(BoneId::LeftLowerLeg, Bone {
             id: BoneId::LeftLowerLeg,
-            length: 0.40,
-            radius: 0.045,
-            mass: 3.0,
-            local_offset: Vec3::new(0.0, -0.42, 0.0),
+            length: CALF_LENGTH,        // 0.40м
+            radius: CALF_RADIUS,        // 0.045м - тонша
+            mass: 4.0,
+            local_offset: Vec3::new(0.0, -THIGH_LENGTH, 0.0),
             angle_limits: AngleLimits::knee(),
         });
 
-        // Права нога - 2 кістки
+        // Права нога: стегно (thigh)
         self.bones.insert(BoneId::RightUpperLeg, Bone {
             id: BoneId::RightUpperLeg,
-            length: 0.42,
-            radius: 0.06,
-            mass: 5.0,
-            local_offset: Vec3::new(0.1, -0.1, 0.0),
+            length: THIGH_LENGTH,
+            radius: THIGH_RADIUS,
+            mass: 8.0,
+            local_offset: Vec3::new(HIP_HALF_WIDTH, -0.075, 0.0),
             angle_limits: AngleLimits::hip(),
         });
 
+        // Права нога: гомілка (calf)
         self.bones.insert(BoneId::RightLowerLeg, Bone {
             id: BoneId::RightLowerLeg,
-            length: 0.40,
-            radius: 0.045,
-            mass: 3.0,
-            local_offset: Vec3::new(0.0, -0.42, 0.0),
+            length: CALF_LENGTH,
+            radius: CALF_RADIUS,
+            mass: 4.0,
+            local_offset: Vec3::new(0.0, -THIGH_LENGTH, 0.0),
             angle_limits: AngleLimits::knee(),
         });
     }
 
     /// Створює фізичні тіла для кісток
     fn create_bodies(&mut self, physics: &mut PhysicsWorld, root_pos: Vec3) {
-        // Обчислюємо world positions для кожної кістки
+        log_debug("=== SKELETON CREATION ===");
+        log_debug(&format!("Root position: ({:.2}, {:.2}, {:.2})", root_pos.x, root_pos.y, root_pos.z));
+
+        // Обчислюємо world positions для ЦЕНТРІВ кісток (не точок з'єднання!)
+        // Це критично важливо - Rapier позиціонує тіла по центру
         let mut world_positions: HashMap<BoneId, Vec3> = HashMap::new();
 
         for bone_id in BoneId::all_bones() {
@@ -384,12 +456,62 @@ impl Skeleton {
 
             let world_pos = if let Some(parent_id) = bone_id.parent() {
                 let parent_pos = world_positions.get(&parent_id).unwrap();
-                *parent_pos + bone.local_offset
+                let parent_bone = self.bones.get(&parent_id).unwrap();
+
+                // Точка з'єднання на батьківській кістці
+                // Для рук: local_offset.x визначає відстань до плечового суглоба
+                let joint_point = *parent_pos + bone.local_offset;
+
+                // Зміщення від точки з'єднання до центру дочірньої кістки
+                // Залежить від того, яким кінцем кістка кріпиться
+                // A-POSE: руки відведені від тіла на ~25 градусів
+                let half_len = bone.length / 2.0;
+
+                // Кут відведення рук для A-pose (~25 градусів = 0.44 радіан)
+                const ARM_ANGLE: f32 = 0.44;  // ~25 degrees from vertical
+                let arm_x = half_len * ARM_ANGLE.sin();  // Horizontal component
+                let arm_y = half_len * ARM_ANGLE.cos();  // Vertical component
+
+                let center_offset = match bone_id {
+                    // Ноги: верхній кінець (+Y) кріпиться до батька → центр нижче на half_len
+                    BoneId::LeftUpperLeg | BoneId::RightUpperLeg |
+                    BoneId::LeftLowerLeg | BoneId::RightLowerLeg => {
+                        Vec3::new(0.0, -half_len, 0.0)
+                    }
+                    // Spine/Head: нижній кінець (-Y) кріпиться до батька → центр вище на half_len
+                    BoneId::Spine | BoneId::Head => {
+                        Vec3::new(0.0, half_len, 0.0)
+                    }
+                    // A-POSE: Руки відведені від тіла
+                    // Upper arms: кріпиться до spine, відведена назовні
+                    BoneId::LeftUpperArm => {
+                        Vec3::new(-arm_x, -arm_y, 0.0)  // Left: negative X
+                    }
+                    BoneId::RightUpperArm => {
+                        Vec3::new(arm_x, -arm_y, 0.0)   // Right: positive X
+                    }
+                    // Lower arms: кріпиться до upper arm, продовжує напрямок
+                    BoneId::LeftLowerArm => {
+                        Vec3::new(-arm_x, -arm_y, 0.0)
+                    }
+                    BoneId::RightLowerArm => {
+                        Vec3::new(arm_x, -arm_y, 0.0)
+                    }
+                    _ => Vec3::ZERO,
+                };
+
+                joint_point + center_offset
             } else {
                 root_pos
             };
 
             world_positions.insert(bone_id, world_pos);
+
+            // Логування створеної позиції
+            log_debug(&format!(
+                "{:?}: center=({:.3}, {:.3}, {:.3}) length={:.2} radius={:.2}",
+                bone_id, world_pos.x, world_pos.y, world_pos.z, bone.length, bone.radius
+            ));
 
             // Всі тіла динамічні, але з різним damping
             // Pelvis має дуже високий damping для стабільності
@@ -412,8 +534,31 @@ impl Skeleton {
                 (5.0, 1.0)
             };
 
+            // Обчислюємо початкову ротацію
+            // A-POSE: руки повернуті на ~25° від вертикалі
+            const ARM_ANGLE: f32 = 0.44;  // ~25 degrees
+            let initial_rotation = match bone_id {
+                // Ліва рука: поворот навколо Z (нахил назовні)
+                BoneId::LeftUpperArm | BoneId::LeftLowerArm => {
+                    nalgebra::UnitQuaternion::from_axis_angle(
+                        &nalgebra::Vector3::z_axis(),
+                        -ARM_ANGLE  // Negative = rotate outward for left arm
+                    )
+                }
+                // Права рука: поворот навколо Z (нахил назовні)
+                BoneId::RightUpperArm | BoneId::RightLowerArm => {
+                    nalgebra::UnitQuaternion::from_axis_angle(
+                        &nalgebra::Vector3::z_axis(),
+                        ARM_ANGLE  // Positive = rotate outward for right arm
+                    )
+                }
+                // Всі інші: без ротації
+                _ => nalgebra::UnitQuaternion::identity()
+            };
+
             let body = RigidBodyBuilder::dynamic()
                 .translation(vector![world_pos.x, world_pos.y, world_pos.z])
+                .rotation(initial_rotation.scaled_axis())
                 .angular_damping(angular_damp)
                 .linear_damping(linear_damp)
                 .ccd_enabled(true)
@@ -422,118 +567,259 @@ impl Skeleton {
             let handle = physics.add_rigid_body(body);
             self.bodies.insert(bone_id, handle);
 
-            // Створюємо collider (capsule) з collision filtering
-            // КРИТИЧНО: Вимикаємо самозіткнення - це найдорожча операція!
+            // Створюємо collider з collision filtering
+            // ВИМКНЕНО самозіткнення - запобігає стрибанню кінцівок
             let collision_groups = InteractionGroups::new(
-                Group::GROUP_1,  // This ragdoll's group
+                Group::GROUP_1,
                 Group::ALL & !Group::GROUP_1  // Collide with everything EXCEPT self
             );
 
+            // ВСІ кістки - КАПСУЛИ (capsule_y)
+            // Це дає правильну форму як на референсі
             let collider = ColliderBuilder::capsule_y(bone.length / 2.0, bone.radius)
                 .density(bone.mass / (std::f32::consts::PI * bone.radius * bone.radius * bone.length))
                 .friction(0.8)
                 .restitution(0.1)
-                .collision_groups(collision_groups)  // Вимикаємо self-collision
+                .collision_groups(collision_groups)
                 .build();
 
             physics.add_collider(collider, handle);
         }
     }
 
-    /// Створює joints між кістками (оптимізовано: спеціалізовані типи)
+    /// Створює joints між кістками (MULTIBODY - reduced coordinates, cannot violate constraints!)
     fn create_joints(&mut self, physics: &mut PhysicsWorld) {
+        log_debug("=== MULTIBODY JOINTS CREATION ===");
+
         for bone_id in BoneId::all_bones() {
             if let Some(parent_id) = bone_id.parent() {
                 let bone = self.bones.get(&bone_id).unwrap();
                 let parent_handle = *self.bodies.get(&parent_id).unwrap();
                 let child_handle = *self.bodies.get(&bone_id).unwrap();
 
-                let anchor1 = point![bone.local_offset.x, bone.local_offset.y, bone.local_offset.z];
-                let anchor2 = point![0.0, 0.0, 0.0];
+                // anchor1: точка кріплення на батьківській кістці (в ЛОКАЛЬНИХ координатах батька)
+                // local_offset - це зміщення від ЦЕНТРУ батька до точки з'єднання
+                let parent_bone = self.bones.get(&parent_id).unwrap();
+                let child_half_len = bone.length / 2.0;
+                let parent_half_len = parent_bone.length / 2.0;
 
-                // Використовуємо різні типи joints для оптимізації
-                match bone_id {
-                    // HINGE JOINTS (1 DOF) - knees and elbows - 3x faster!
+                // Anchor1 залежить від типу батьківської кістки:
+                // Всі капсули вертикальні (Y-axis), центр в середині
+                // anchor1 = точка кріплення на БАТЬКУ в локальних координатах батька
+                //
+                // ВАЖЛИВО: anchor повинен вказувати на КРАЙ кістки, а не на local_offset
+                // local_offset використовується для ПОЗИЦІОНУВАННЯ тіла при створенні,
+                // а anchor - для з'єднання в ЛОКАЛЬНИХ координатах (відносно центру тіла)
+                let anchor1 = match (parent_id, bone_id) {
+                    // Spine: кріпиться до верху pelvis
+                    (BoneId::Pelvis, BoneId::Spine) => {
+                        point![0.0, parent_half_len, 0.0]  // Верх pelvis
+                    }
+                    // Head: кріпиться до верху spine
+                    (BoneId::Spine, BoneId::Head) => {
+                        point![0.0, parent_half_len, 0.0]  // Верх spine
+                    }
+                    // Upper arms: кріпляться збоку spine, трохи нижче верху
+                    (BoneId::Spine, BoneId::LeftUpperArm) => {
+                        point![-0.29, 0.15, 0.0]  // Ліве плече
+                    }
+                    (BoneId::Spine, BoneId::RightUpperArm) => {
+                        point![0.29, 0.15, 0.0]   // Праве плече
+                    }
+                    // Lower arms: кріпляться до НИЗУ upper arm
+                    (BoneId::LeftUpperArm, _) | (BoneId::RightUpperArm, _) => {
+                        point![0.0, -parent_half_len, 0.0]  // Низ upper arm
+                    }
+                    // Upper legs: кріпляться до НИЗУ pelvis, збоку
+                    (BoneId::Pelvis, BoneId::LeftUpperLeg) => {
+                        point![-0.14, -parent_half_len, 0.0]  // Ліве стегно
+                    }
+                    (BoneId::Pelvis, BoneId::RightUpperLeg) => {
+                        point![0.14, -parent_half_len, 0.0]   // Праве стегно
+                    }
+                    // Lower legs: кріпляться до НИЗУ upper leg
+                    (BoneId::LeftUpperLeg, _) | (BoneId::RightUpperLeg, _) => {
+                        point![0.0, -parent_half_len, 0.0]  // Низ upper leg (коліно)
+                    }
+                    // Fallback
+                    _ => point![bone.local_offset.x, bone.local_offset.y, bone.local_offset.z],
+                };
+
+                // anchor2: точка кріплення на дочірній кістці (в локальних координатах дитини)
+                // Всі капсули вертикальні (Y-axis), верхній кінець = +Y, нижній = -Y
+                let anchor2 = match bone_id {
+                    // Ноги: верхній кінець (+Y) кріпиться до pelvis
+                    BoneId::LeftUpperLeg | BoneId::RightUpperLeg |
                     BoneId::LeftLowerLeg | BoneId::RightLowerLeg => {
-                        // Knee - hinge around X axis
-                        let mut joint = RevoluteJointBuilder::new(UnitVector::new_normalize(vector![1.0, 0.0, 0.0]))
+                        point![0.0, child_half_len, 0.0]
+                    }
+                    // Spine/Head: нижній кінець (-Y) кріпиться до батька
+                    BoneId::Spine | BoneId::Head => {
+                        point![0.0, -child_half_len, 0.0]
+                    }
+                    // Руки (всі вертикальні): верхній кінець (+Y) кріпиться до батька
+                    BoneId::LeftUpperArm | BoneId::RightUpperArm |
+                    BoneId::LeftLowerArm | BoneId::RightLowerArm => {
+                        point![0.0, child_half_len, 0.0]
+                    }
+                    _ => point![0.0, 0.0, 0.0],
+                };
+
+                log_debug(&format!(
+                    "{:?}->{:?}: anchor1=({:.3}, {:.3}, {:.3}) anchor2=({:.3}, {:.3}, {:.3})",
+                    parent_id, bone_id,
+                    anchor1.x, anchor1.y, anchor1.z,
+                    anchor2.x, anchor2.y, anchor2.z
+                ));
+
+                // Використовуємо IMPULSE joints - краща стабільність для active ragdoll
+                match bone_id {
+                    // HINGE JOINTS (1 DOF) - knees and elbows
+                    BoneId::LeftLowerLeg | BoneId::RightLowerLeg => {
+                        let joint = RevoluteJointBuilder::new(UnitVector::new_normalize(vector![1.0, 0.0, 0.0]))
                             .local_anchor1(anchor1)
                             .local_anchor2(anchor2)
-                            .limits([0.0, 2.5])  // 0° to ~140°
+                            .limits([0.0, 2.5])
                             .motor_position(0.0, 150.0, 30.0)
                             .motor_max_force(1500.0)
                             .build();
 
-                        let joint_handle = physics.add_joint(parent_handle, child_handle, joint);
+                        let joint_handle = physics.impulse_joint_set.insert(
+                            parent_handle,
+                            child_handle,
+                            joint,
+                            true
+                        );
                         self.joints.insert(bone_id, joint_handle);
+                        log_debug(&format!("Created ImpulseRevoluteJoint (knee) for {:?}", bone_id));
                     },
 
                     BoneId::LeftLowerArm | BoneId::RightLowerArm => {
-                        // Elbow - hinge around X axis
-                        let mut joint = RevoluteJointBuilder::new(UnitVector::new_normalize(vector![1.0, 0.0, 0.0]))
+                        let joint = RevoluteJointBuilder::new(UnitVector::new_normalize(vector![1.0, 0.0, 0.0]))
                             .local_anchor1(anchor1)
                             .local_anchor2(anchor2)
-                            .limits([0.0, 2.4])  // 0° to ~135°
+                            .limits([0.0, 2.4])
                             .motor_position(0.0, 120.0, 25.0)
                             .motor_max_force(1200.0)
                             .build();
 
-                        let joint_handle = physics.add_joint(parent_handle, child_handle, joint);
+                        let joint_handle = physics.impulse_joint_set.insert(
+                            parent_handle,
+                            child_handle,
+                            joint,
+                            true
+                        );
                         self.joints.insert(bone_id, joint_handle);
+                        log_debug(&format!("Created ImpulseRevoluteJoint (elbow) for {:?}", bone_id));
                     },
 
-                    // BALL JOINTS (3 DOF) - hips, shoulders, spine, head - 1.5x faster than Generic
+                    // SPHERICAL JOINTS (3 DOF) - shoulders, hips, spine, head
+                    // З motor для жорсткості суглобів
                     BoneId::LeftUpperLeg | BoneId::RightUpperLeg => {
-                        // Hip - ball socket
-                        let joint = SphericalJointBuilder::new()
+                        // Hip joints - потужні для підтримки тіла
+                        let mut joint = SphericalJointBuilder::new()
                             .local_anchor1(anchor1)
                             .local_anchor2(anchor2)
                             .build();
+                        // Додаємо motor на всіх осях для жорсткості
+                        joint.set_motor_position(JointAxis::AngX, 0.0, 200.0, 40.0);
+                        joint.set_motor_position(JointAxis::AngY, 0.0, 200.0, 40.0);
+                        joint.set_motor_position(JointAxis::AngZ, 0.0, 200.0, 40.0);
+                        joint.set_motor_max_force(JointAxis::AngX, 2000.0);
+                        joint.set_motor_max_force(JointAxis::AngY, 2000.0);
+                        joint.set_motor_max_force(JointAxis::AngZ, 2000.0);
 
-                        let joint_handle = physics.add_joint(parent_handle, child_handle, joint);
+                        let joint_handle = physics.impulse_joint_set.insert(
+                            parent_handle,
+                            child_handle,
+                            joint,
+                            true
+                        );
                         self.joints.insert(bone_id, joint_handle);
+                        log_debug(&format!("Created ImpulseSphericalJoint (hip) for {:?}", bone_id));
                     },
 
                     BoneId::LeftUpperArm | BoneId::RightUpperArm => {
-                        // Shoulder - ball socket
-                        let joint = SphericalJointBuilder::new()
+                        // Shoulder joints - середня жорсткість
+                        let mut joint = SphericalJointBuilder::new()
                             .local_anchor1(anchor1)
                             .local_anchor2(anchor2)
                             .build();
+                        joint.set_motor_position(JointAxis::AngX, 0.0, 100.0, 20.0);
+                        joint.set_motor_position(JointAxis::AngY, 0.0, 100.0, 20.0);
+                        joint.set_motor_position(JointAxis::AngZ, 0.0, 100.0, 20.0);
+                        joint.set_motor_max_force(JointAxis::AngX, 1000.0);
+                        joint.set_motor_max_force(JointAxis::AngY, 1000.0);
+                        joint.set_motor_max_force(JointAxis::AngZ, 1000.0);
 
-                        let joint_handle = physics.add_joint(parent_handle, child_handle, joint);
+                        let joint_handle = physics.impulse_joint_set.insert(
+                            parent_handle,
+                            child_handle,
+                            joint,
+                            true
+                        );
                         self.joints.insert(bone_id, joint_handle);
+                        log_debug(&format!("Created ImpulseSphericalJoint (shoulder) for {:?}", bone_id));
                     },
 
                     BoneId::Spine => {
-                        // Spine-Pelvis - ball socket with limited range
-                        let joint = SphericalJointBuilder::new()
+                        // Spine - дуже жорсткий для стабільності
+                        let mut joint = SphericalJointBuilder::new()
                             .local_anchor1(anchor1)
                             .local_anchor2(anchor2)
                             .build();
+                        joint.set_motor_position(JointAxis::AngX, 0.0, 300.0, 60.0);
+                        joint.set_motor_position(JointAxis::AngY, 0.0, 300.0, 60.0);
+                        joint.set_motor_position(JointAxis::AngZ, 0.0, 300.0, 60.0);
+                        joint.set_motor_max_force(JointAxis::AngX, 3000.0);
+                        joint.set_motor_max_force(JointAxis::AngY, 3000.0);
+                        joint.set_motor_max_force(JointAxis::AngZ, 3000.0);
 
-                        let joint_handle = physics.add_joint(parent_handle, child_handle, joint);
+                        let joint_handle = physics.impulse_joint_set.insert(
+                            parent_handle,
+                            child_handle,
+                            joint,
+                            true
+                        );
                         self.joints.insert(bone_id, joint_handle);
+                        log_debug(&format!("Created ImpulseSphericalJoint (spine) for {:?}", bone_id));
                     },
 
                     BoneId::Head => {
-                        // Head-Spine - ball socket
+                        // Head/neck - м'якший для природного руху
+                        let mut joint = SphericalJointBuilder::new()
+                            .local_anchor1(anchor1)
+                            .local_anchor2(anchor2)
+                            .build();
+                        joint.set_motor_position(JointAxis::AngX, 0.0, 80.0, 15.0);
+                        joint.set_motor_position(JointAxis::AngY, 0.0, 80.0, 15.0);
+                        joint.set_motor_position(JointAxis::AngZ, 0.0, 80.0, 15.0);
+                        joint.set_motor_max_force(JointAxis::AngX, 800.0);
+                        joint.set_motor_max_force(JointAxis::AngY, 800.0);
+                        joint.set_motor_max_force(JointAxis::AngZ, 800.0);
+
+                        let joint_handle = physics.impulse_joint_set.insert(
+                            parent_handle,
+                            child_handle,
+                            joint,
+                            true
+                        );
+                        self.joints.insert(bone_id, joint_handle);
+                        log_debug(&format!("Created ImpulseSphericalJoint (head) for {:?}", bone_id));
+                    },
+
+                    _ => {
                         let joint = SphericalJointBuilder::new()
                             .local_anchor1(anchor1)
                             .local_anchor2(anchor2)
                             .build();
 
-                        let joint_handle = physics.add_joint(parent_handle, child_handle, joint);
-                        self.joints.insert(bone_id, joint_handle);
-                    },
-
-                    _ => {
-                        // Fallback - shouldn't happen with 11-bone skeleton
-                        let mut joint = GenericJointBuilder::new(JointAxesMask::LOCKED_SPHERICAL_AXES)
-                            .local_anchor1(anchor1)
-                            .local_anchor2(anchor2)
-                            .build();
-                        let joint_handle = physics.add_joint(parent_handle, child_handle, joint);
+                        let joint_handle = physics.impulse_joint_set.insert(
+                            parent_handle,
+                            child_handle,
+                            joint,
+                            true
+                        );
                         self.joints.insert(bone_id, joint_handle);
                     }
                 }

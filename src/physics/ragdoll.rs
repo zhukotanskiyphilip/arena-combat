@@ -19,6 +19,7 @@ use rapier3d::prelude::*;
 
 use super::{PhysicsWorld, Skeleton, MuscleSystem, BoneId};
 use super::muscle::{TargetPose, WalkCycle};
+use crate::debug_log::log_debug;
 
 /// Режим роботи ragdoll
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -72,6 +73,9 @@ pub struct ActiveRagdoll {
 
     /// Сила для обертання
     pub rotation_force: f32,
+
+    /// Лічильник кадрів для логування
+    frame_count: u32,
 }
 
 impl ActiveRagdoll {
@@ -83,7 +87,7 @@ impl ActiveRagdoll {
         Self {
             skeleton,
             muscles,
-            mode: RagdollMode::Active,
+            mode: RagdollMode::Ragdoll,  // Починаємо з чистого ragdoll - тільки гравітація!
             walk_cycle: WalkCycle::new(),
             is_walking: false,
             move_direction: Vec3::NEG_Z,
@@ -91,14 +95,22 @@ impl ActiveRagdoll {
             target_position: position,
             target_yaw: 0.0,
             move_speed: 3.0,
-            upright_force: 500.0,      // Сила для утримання вертикалі
-            movement_force: 200.0,     // Сила для руху
-            rotation_force: 100.0,     // Сила для обертання
+            upright_force: 500.0,
+            movement_force: 200.0,
+            rotation_force: 100.0,
+            frame_count: 0,
         }
     }
 
     /// Оновлює ragdoll
     pub fn update(&mut self, physics: &mut PhysicsWorld, delta: f32) {
+        self.frame_count += 1;
+
+        // Логування кожні 60 кадрів (раз на секунду при 60 FPS)
+        if self.frame_count % 60 == 1 {
+            self.log_bone_positions(physics);
+        }
+
         // Оновлюємо режим
         match self.mode {
             RagdollMode::Active => {
@@ -322,5 +334,56 @@ impl ActiveRagdoll {
                 Some((bone_id, pos, rot))
             })
             .collect()
+    }
+
+    /// Логує позиції всіх кісток для діагностики
+    fn log_bone_positions(&self, physics: &PhysicsWorld) {
+        log_debug(&format!("=== RAGDOLL FRAME {} ===", self.frame_count));
+
+        for bone_id in BoneId::all_bones() {
+            if let Some(pos) = self.skeleton.get_bone_position(physics, bone_id) {
+                let rot = self.skeleton.get_bone_rotation(physics, bone_id)
+                    .unwrap_or(Quat::IDENTITY);
+
+                // Euler angles для читабельності
+                let (yaw, pitch, roll) = rot.to_euler(glam::EulerRot::YXZ);
+
+                log_debug(&format!(
+                    "{:?}: pos=({:.2}, {:.2}, {:.2}) rot=({:.1}°, {:.1}°, {:.1}°)",
+                    bone_id,
+                    pos.x, pos.y, pos.z,
+                    yaw.to_degrees(), pitch.to_degrees(), roll.to_degrees()
+                ));
+            } else {
+                log_debug(&format!("{:?}: MISSING!", bone_id));
+            }
+        }
+
+        // Відстані між з'єднаними кістками
+        log_debug("--- JOINT DISTANCES ---");
+        let check_pairs = [
+            (BoneId::Pelvis, BoneId::Spine, "Pelvis-Spine"),
+            (BoneId::Spine, BoneId::Head, "Spine-Head"),
+            (BoneId::Pelvis, BoneId::LeftUpperLeg, "Pelvis-LUpperLeg"),
+            (BoneId::LeftUpperLeg, BoneId::LeftLowerLeg, "LUpperLeg-LLowerLeg"),
+            (BoneId::Pelvis, BoneId::RightUpperLeg, "Pelvis-RUpperLeg"),
+            (BoneId::RightUpperLeg, BoneId::RightLowerLeg, "RUpperLeg-RLowerLeg"),
+            (BoneId::Spine, BoneId::LeftUpperArm, "Spine-LUpperArm"),
+            (BoneId::LeftUpperArm, BoneId::LeftLowerArm, "LUpperArm-LLowerArm"),
+            (BoneId::Spine, BoneId::RightUpperArm, "Spine-RUpperArm"),
+            (BoneId::RightUpperArm, BoneId::RightLowerArm, "RUpperArm-RLowerArm"),
+        ];
+
+        for (parent, child, name) in check_pairs {
+            if let (Some(p1), Some(p2)) = (
+                self.skeleton.get_bone_position(physics, parent),
+                self.skeleton.get_bone_position(physics, child),
+            ) {
+                let dist = (p2 - p1).length();
+                log_debug(&format!("{}: {:.3}m", name, dist));
+            }
+        }
+
+        log_debug("");
     }
 }

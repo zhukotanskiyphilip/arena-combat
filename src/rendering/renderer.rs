@@ -73,8 +73,9 @@ use crate::enemy::Enemy;
 use crate::debug_log::log_debug;
 use crate::physics::BoneId;
 use super::grid::Grid;
-use super::mesh::{Mesh, generate_cube, generate_player_mannequin, generate_player_body, generate_weapon_arm};
+use super::mesh::{Mesh, generate_player_mannequin, generate_player_body, generate_weapon_arm};
 use super::skeleton_renderer::SkeletonRenderer;
+use super::screenshot::FirstFrameCapture;
 use glam::{Vec3, Quat};
 
 /// Основний renderer на базі wgpu
@@ -139,6 +140,13 @@ pub struct WgpuRenderer {
 
     /// Чи показувати скелет (для debug)
     pub show_skeleton: bool,
+
+    /// Offscreen render texture (for screenshot support)
+    render_texture: wgpu::Texture,
+    render_texture_view: wgpu::TextureView,
+
+    /// Screenshot capture for first frame (for AI analysis)
+    first_frame_capture: FirstFrameCapture,
 }
 
 impl WgpuRenderer {
@@ -162,9 +170,12 @@ impl WgpuRenderer {
         log::debug!("Розмір вікна: {}x{}", size.width, size.height);
 
         // 1. Створити wgpu Instance (точка входу в wgpu)
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(), // Автовибір: Vulkan/DX12/Metal
-            ..Default::default()
+        // Використовуємо PRIMARY backends (D3D12 на Windows, Metal на macOS, Vulkan на Linux)
+        // wgpu 24.0+ має виправлені D3D12 resource state transitions
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::PRIMARY,
+            flags: wgpu::InstanceFlags::default(),
+            backend_options: wgpu::BackendOptions::default(),
         });
         log::debug!("wgpu Instance створено");
 
@@ -204,6 +215,13 @@ impl WgpuRenderer {
             .unwrap();
         log::debug!("wgpu Device і Queue створені");
 
+        // Налаштовуємо обробник некритичних помилок wgpu
+        device.on_uncaptured_error(Box::new(|error| {
+            let msg = format!("WGPU UNCAPTURED ERROR: {:?}", error);
+            log::error!("{}", msg);
+            crate::debug_log::log_console(&msg);
+        }));
+
         // 5. Налаштувати Surface
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format = surface_caps
@@ -216,7 +234,7 @@ impl WgpuRenderer {
         log::debug!("Surface format: {:?}", surface_format);
 
         let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT, // Тільки RENDER_ATTACHMENT для swapchain
             format: surface_format,
             width: size.width,
             height: size.height,
@@ -278,56 +296,8 @@ impl WgpuRenderer {
         // 11. Створити Depth Texture
         let (depth_texture, depth_view) = Self::create_depth_texture(&device, &config);
 
-        // 12. Створити кілька Cube meshes з різними позиціями
-        let mut cubes = Vec::new();
-
-        // Центральний червоний куб (трохи підняти над grid)
-        let (cube_vertices, cube_indices) = generate_cube(1.0, [0.8, 0.3, 0.3]);
-        let cube1 = Mesh::new(
-            &device,
-            &config,
-            &cube_vertices,
-            &cube_indices,
-            &camera_bind_group_layout,
-            Transform::new(Vec3::new(0.0, 0.5, 0.0)), // Center, lifted by 0.5 (half of cube height)
-        );
-        cubes.push(cube1);
-
-        // Зелений куб зліва
-        let (cube_vertices, cube_indices) = generate_cube(1.0, [0.3, 0.8, 0.3]);
-        let cube2 = Mesh::new(
-            &device,
-            &config,
-            &cube_vertices,
-            &cube_indices,
-            &camera_bind_group_layout,
-            Transform::new(Vec3::new(-3.0, 0.5, 0.0)),
-        );
-        cubes.push(cube2);
-
-        // Синій куб справа
-        let (cube_vertices, cube_indices) = generate_cube(1.0, [0.3, 0.3, 0.8]);
-        let cube3 = Mesh::new(
-            &device,
-            &config,
-            &cube_vertices,
-            &cube_indices,
-            &camera_bind_group_layout,
-            Transform::new(Vec3::new(3.0, 0.5, 0.0)),
-        );
-        cubes.push(cube3);
-
-        // Жовтий куб позаду
-        let (cube_vertices, cube_indices) = generate_cube(1.5, [0.9, 0.8, 0.2]); // Bigger cube
-        let cube4 = Mesh::new(
-            &device,
-            &config,
-            &cube_vertices,
-            &cube_indices,
-            &camera_bind_group_layout,
-            Transform::new(Vec3::new(0.0, 0.75, -4.0)),
-        );
-        cubes.push(cube4);
+        // 12. Cubes (вимкнено для тестування ragdoll)
+        let cubes = Vec::new();
 
         // 13. Створити Player body mesh (без руки)
         let (body_vertices, body_indices) = generate_player_body(
@@ -365,10 +335,11 @@ impl WgpuRenderer {
         // 15. Створити Skeleton Renderer для фізичного ragdoll
         let skeleton_renderer = SkeletonRenderer::new(&device, &config, &camera_bind_group_layout);
 
+        // 16. Створити render texture для screenshot support
+        let (render_texture, render_texture_view) = Self::create_render_texture(&device, &config);
+
         log::info!("wgpu renderer готовий до роботи!");
         log::info!("Camera: position={:?}, target={:?}", camera.position, camera.target);
-        log::info!("Створено {} кубів з різними позиціями", cubes.len());
-        log::info!("Створено player mannequin mesh");
 
         Self {
             surface,
@@ -391,6 +362,9 @@ impl WgpuRenderer {
             camera_bind_group_layout,
             skeleton_renderer,
             show_skeleton: false,
+            render_texture,
+            render_texture_view,
+            first_frame_capture: FirstFrameCapture::new(),
         }
     }
 
@@ -421,6 +395,33 @@ impl WgpuRenderer {
         (texture, view)
     }
 
+    /// Створює offscreen render texture для screenshot support
+    fn create_render_texture(
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let size = wgpu::Extent3d {
+            width: config.width,
+            height: config.height,
+            depth_or_array_layers: 1,
+        };
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Render Texture"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        (texture, view)
+    }
+
     /// Оновлює розмір вікна
     ///
     /// Викликається при WindowEvent::Resized
@@ -438,6 +439,11 @@ impl WgpuRenderer {
             // Оновлюємо aspect ratio камери
             self.camera.update_aspect(new_size.width, new_size.height);
 
+            // Пересоздаємо render texture з новим розміром
+            let (render_texture, render_texture_view) = Self::create_render_texture(&self.device, &self.config);
+            self.render_texture = render_texture;
+            self.render_texture_view = render_texture_view;
+
             // Пересоздаємо depth texture з новим розміром
             let (depth_texture, depth_view) = Self::create_depth_texture(&self.device, &self.config);
             self.depth_texture = depth_texture;
@@ -447,8 +453,8 @@ impl WgpuRenderer {
 
     /// Рендерить один кадр
     ///
-    /// На даному етапі: просто очищує екран кольором.
-    /// Майбутнє: рендерінг 3D сцени.
+    /// Рендеринг відбувається напряму на swapchain texture.
+    /// Screenshot (якщо потрібен) рендериться окремо в offscreen texture.
     ///
     /// # Повертає
     /// `Ok(())` якщо рендерінг успішний
@@ -458,6 +464,12 @@ impl WgpuRenderer {
     /// - `SurfaceError::Lost` - surface втрачено, треба пересоздать
     /// - `SurfaceError::OutOfMemory` - не вистачає пам'яті
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+        // Check if we need screenshot this frame
+        let need_screenshot = self.first_frame_capture.should_capture();
+        if need_screenshot {
+            self.first_frame_capture.init(&self.device, self.config.width, self.config.height);
+        }
+
         // 1. Оновити camera uniform buffer
         self.camera_uniform.update_view_proj(&self.camera);
         self.queue.write_buffer(
@@ -468,84 +480,94 @@ impl WgpuRenderer {
 
         // 2. Отримати поточний frame з surface
         let output = self.surface.get_current_texture()?;
+        let output_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // 3. Створити view для текстури
-        let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
-        // 4. Створити command encoder
+        // 3. Створити command encoder
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Render Encoder"),
             });
 
-        // 5. Створити render pass з depth buffer
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.1, // Темно-синій колір для арени
-                            g: 0.2,
-                            b: 0.3,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0), // Clear depth to 1.0 (far)
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                occlusion_query_set: None,
-                timestamp_writes: None,
-            });
+        // 4. Рендеримо напряму на swapchain
+        self.render_scene(&mut encoder, &output_view);
 
-            // Малюємо 3D об'єкти (cubes)
-            for cube in &self.cubes {
-                cube.render(&mut render_pass, &self.camera_bind_group);
-            }
-
-            // Малюємо старий player mesh ТІЛЬКИ якщо скелет вимкнено
-            if !self.show_skeleton {
-                // Малюємо player body
-                self.player_mesh.render(&mut render_pass, &self.camera_bind_group);
-
-                // Малюємо player weapon/arm
-                self.weapon_mesh.render(&mut render_pass, &self.camera_bind_group);
-            }
-
-            // Малюємо enemies
-            for enemy_mesh in &self.enemy_meshes {
-                enemy_mesh.render(&mut render_pass, &self.camera_bind_group);
-            }
-
-            // Малюємо skeleton (якщо увімкнено)
-            if self.show_skeleton {
-                self.skeleton_renderer.render(&mut render_pass, &self.camera_bind_group);
-            }
-
-            // Малюємо grid (після mesh щоб правильно відображався поверх через alpha)
-            self.grid.render(&mut render_pass, &self.camera_bind_group);
-            // render_pass автоматично завершується при drop
+        // 5. Якщо потрібен screenshot - рендеримо ще раз в offscreen texture
+        if need_screenshot {
+            self.render_scene(&mut encoder, &self.render_texture_view);
+            self.first_frame_capture.copy_if_needed(&mut encoder, &self.render_texture);
         }
 
-        // 5. Відправити команди в queue
+        // 6. Відправити команди в queue
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        // 6. Презентувати frame
+        // 7. Save screenshot after submit
+        if need_screenshot {
+            self.first_frame_capture.save_if_needed(&self.device);
+        }
+
+        // 8. Презентувати frame
         output.present();
 
         Ok(())
+    }
+
+    /// Внутрішній метод для рендерингу сцени в конкретний view
+    fn render_scene(&self, encoder: &mut wgpu::CommandEncoder, target_view: &wgpu::TextureView) {
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Render Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.1, // Темно-синій колір для арени
+                        g: 0.2,
+                        b: 0.3,
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0), // Clear depth to 1.0 (far)
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            occlusion_query_set: None,
+            timestamp_writes: None,
+        });
+
+        // Малюємо 3D об'єкти (cubes)
+        for cube in &self.cubes {
+            cube.render(&mut render_pass, &self.camera_bind_group);
+        }
+
+        // Малюємо старий player mesh ТІЛЬКИ якщо скелет вимкнено
+        if !self.show_skeleton {
+            // Малюємо player body
+            self.player_mesh.render(&mut render_pass, &self.camera_bind_group);
+
+            // Малюємо player weapon/arm
+            self.weapon_mesh.render(&mut render_pass, &self.camera_bind_group);
+        }
+
+        // Малюємо enemies
+        for enemy_mesh in &self.enemy_meshes {
+            enemy_mesh.render(&mut render_pass, &self.camera_bind_group);
+        }
+
+        // Малюємо skeleton (якщо увімкнено)
+        if self.show_skeleton {
+            self.skeleton_renderer.render(&mut render_pass, &self.camera_bind_group);
+        }
+
+        // Малюємо grid (після mesh щоб правильно відображався поверх через alpha)
+        self.grid.render(&mut render_pass, &self.camera_bind_group);
+        // render_pass автоматично завершується при drop
     }
 
     /// Повертає поточний розмір вікна

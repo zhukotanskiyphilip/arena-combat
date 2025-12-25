@@ -20,6 +20,16 @@ use glam::{Vec3, Quat};
 use std::collections::HashMap;
 
 use super::skeleton::{Skeleton, BoneId};
+
+/// Smooth step function для плавної інтерполяції
+/// Ease-in-ease-out: повільний старт, швидка середина, повільний кінець
+/// Формула: t² × (3 - 2t)
+#[inline]
+pub fn smooth_step(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 use super::PhysicsWorld;
 
 /// PD-контролер для одного суглоба
@@ -260,6 +270,7 @@ impl TargetPose {
 }
 
 /// Цикл ходьби - генерує пози для анімації ходьби
+#[derive(Debug, Clone)]
 pub struct WalkCycle {
     /// Фаза циклу (0.0 - 1.0)
     pub phase: f32,
@@ -267,8 +278,20 @@ pub struct WalkCycle {
     /// Швидкість ходьби
     pub speed: f32,
 
-    /// Довжина кроку
+    /// Довжина кроку (радіани повороту стегна)
     pub stride_length: f32,
+
+    /// Висота підйому ноги
+    pub step_height: f32,
+
+    /// Бокове розгойдування стегон
+    pub hip_sway: f32,
+
+    /// Нахил торсу вперед при ходьбі/бігу
+    pub spine_lean_forward: f32,
+
+    /// Амплітуда розмаху рук
+    pub arm_swing_amount: f32,
 }
 
 impl WalkCycle {
@@ -276,7 +299,11 @@ impl WalkCycle {
         Self {
             phase: 0.0,
             speed: 1.0,
-            stride_length: 0.6,
+            stride_length: 0.5,       // радіани (~30°)
+            step_height: 0.15,        // висота підйому ноги
+            hip_sway: 0.05,           // бокове розгойдування
+            spine_lean_forward: 0.1,  // нахил вперед при русі
+            arm_swing_amount: 0.3,    // розмах рук
         }
     }
 
@@ -299,25 +326,27 @@ impl WalkCycle {
             rotations.insert(bone_id, Quat::IDENTITY);
         }
 
-        // Фаза циклу: 0.0-0.5 = права нога вперед, 0.5-1.0 = ліва нога вперед
-        let phase_rad = self.phase * std::f32::consts::TAU;
+        // Застосовуємо smooth_step для плавної анімації
+        // phase 0.0-1.0 → smoothed phase для ease-in-ease-out
+        let smoothed_phase = smooth_step(self.phase);
+        let phase_rad = smoothed_phase * std::f32::consts::TAU;
 
-        // Ноги - синусоїдальний рух
-        let leg_swing = phase_rad.sin() * 0.5;  // ±0.5 радіан (~30°)
+        // Ноги - використовуємо stride_length параметр
+        let leg_swing = phase_rad.sin() * self.stride_length;
 
         // Ліва нога
         rotations.insert(BoneId::LeftUpperLeg, Quat::from_rotation_x(-leg_swing));
-        // Коліно згинається коли нога позаду
-        let left_knee_bend = ((-leg_swing).max(0.0) * 1.5).min(1.2);
+        // Коліно згинається коли нога позаду + step_height впливає на підйом
+        let left_knee_bend = ((-leg_swing).max(0.0) * (1.5 + self.step_height)).min(1.2);
         rotations.insert(BoneId::LeftLowerLeg, Quat::from_rotation_x(left_knee_bend));
 
         // Права нога (протилежна фаза)
         rotations.insert(BoneId::RightUpperLeg, Quat::from_rotation_x(leg_swing));
-        let right_knee_bend = ((leg_swing).max(0.0) * 1.5).min(1.2);
+        let right_knee_bend = ((leg_swing).max(0.0) * (1.5 + self.step_height)).min(1.2);
         rotations.insert(BoneId::RightLowerLeg, Quat::from_rotation_x(right_knee_bend));
 
-        // Руки - протилежно ногам
-        let arm_swing = phase_rad.sin() * 0.3;
+        // Руки - протилежно ногам, використовуємо arm_swing_amount
+        let arm_swing = phase_rad.sin() * self.arm_swing_amount;
         rotations.insert(BoneId::LeftUpperArm,
             Quat::from_rotation_z(-0.2) * Quat::from_rotation_x(arm_swing));
         rotations.insert(BoneId::RightUpperArm,
@@ -327,9 +356,11 @@ impl WalkCycle {
         rotations.insert(BoneId::LeftLowerArm, Quat::from_rotation_x(0.3));
         rotations.insert(BoneId::RightLowerArm, Quat::from_rotation_x(0.3));
 
-        // Торс - легке обертання (chest видалено)
+        // Торс - обертання + нахил вперед пропорційно швидкості
         let torso_twist = phase_rad.sin() * 0.1;
-        rotations.insert(BoneId::Spine, Quat::from_rotation_y(torso_twist));
+        let forward_lean = -self.spine_lean_forward * (self.speed / 3.0).min(1.0);
+        rotations.insert(BoneId::Spine,
+            Quat::from_rotation_x(forward_lean) * Quat::from_rotation_y(torso_twist));
 
         TargetPose { bone_rotations: rotations }
     }

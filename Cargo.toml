@@ -8,7 +8,8 @@ edition = "2021"
 winit = "0.30"
 
 # Graphics (wgpu for cross-platform rendering)
-wgpu = "22.0"
+# 24.0 has critical D3D12 resource state transition fixes
+wgpu = "24.0"
 
 # Math library (vectors, matrices)
 glam = { version = "0.29", features = ["serde"] }
@@ -28,3 +29,6 @@ once_cell = "1.19"
 
 # Physics engine (for ragdoll/muscle simulation)
 rapier3d = "0.22"
+
+# Image processing (for screenshots)
+image = "0.25"
